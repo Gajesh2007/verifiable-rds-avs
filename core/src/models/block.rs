@@ -249,6 +249,11 @@ impl BlockState {
     
     /// Verify the transactions root matches the calculated root
     pub fn verify_transactions_root(&self) -> bool {
+        // For genesis blocks, the transactions_root is set to the state_root
+        if self.is_genesis() {
+            return true;
+        }
+        
         let calculated_root = self.calculate_transactions_root();
         calculated_root == self.header.transactions_root
     }

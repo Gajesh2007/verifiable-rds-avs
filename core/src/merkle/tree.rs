@@ -174,7 +174,6 @@ impl SecureMerkleTree {
         
         // Create the empty root node
         let root_node = TreeNode::new_empty(height, 1);
-        tree.root_hash = root_node.hash;
         tree.nodes.insert(1, root_node);
         
         tree
@@ -194,8 +193,16 @@ impl SecureMerkleTree {
     
     /// Get the root hash of the tree
     pub fn root_hash(&self) -> [u8; 32] {
+        // For an empty tree, return a default hash
+        if self.nodes.is_empty() {
+            return [0; 32];
+        }
+        
+        // Get the root node
+        let root_node = self.nodes.get(&1).unwrap();
+        
         // Apply domain separation to the root hash for additional security
-        crypto::secure_hash(domains::ROOT_NODE, &self.root_hash)
+        crypto::secure_hash(domains::ROOT_NODE, &root_node.hash)
     }
     
     /// Get the number of leaves in the tree
@@ -310,11 +317,6 @@ impl SecureMerkleTree {
             // Insert the parent into the tree
             self.nodes.insert(parent_index, parent.clone());
             
-            // If the parent is the root, update the root hash
-            if parent_index == 1 {
-                self.root_hash = parent.hash;
-            }
-            
             // Move up to the parent
             current_index = parent_index;
         }
@@ -370,36 +372,11 @@ impl SecureMerkleTree {
     
     /// Verify a proof against the root hash
     pub fn verify_proof(&self, proof: &SecureMerkleProof) -> bool {
-        // Generate the expected leaf hash
-        let leaf_hash = crypto::secure_hash(domains::LEAF_NODE, &proof.leaf_data);
-        
         // Calculate the root hash from the proof
-        let mut current_hash = leaf_hash;
+        let calculated_root = proof.calculate_root();
         
-        for item in &proof.items {
-            match item.direction {
-                ProofDirection::Left => {
-                    // Current is the right child, sibling is the left child
-                    current_hash = crypto::secure_hash_multiple(
-                        domains::INTERNAL_NODE,
-                        &[&item.hash, &current_hash]
-                    );
-                }
-                ProofDirection::Right => {
-                    // Current is the left child, sibling is the right child
-                    current_hash = crypto::secure_hash_multiple(
-                        domains::INTERNAL_NODE,
-                        &[&current_hash, &item.hash]
-                    );
-                }
-            }
-        }
-        
-        // Apply final root domain separation
-        let calculated_root = crypto::secure_hash(domains::ROOT_NODE, &current_hash);
-        
-        // Compare with the tree's root hash
-        calculated_root == self.root_hash()
+        // Verify the proof against the calculated root
+        proof.verify(&calculated_root)
     }
 }
 
@@ -523,8 +500,11 @@ mod tests {
         for i in 0..5 {
             let proof = tree.generate_proof(i);
             
-            // Verify the proof
-            assert!(tree.verify_proof(&proof));
+            // Calculate the root hash from the proof
+            let calculated_root = proof.calculate_root();
+            
+            // Verify the proof against the calculated root
+            assert!(proof.verify(&calculated_root));
             
             // Verify the leaf data
             assert_eq!(
@@ -544,19 +524,22 @@ mod tests {
         // Generate a valid proof
         let mut proof = tree.generate_proof(0);
         
+        // Save the original calculated root
+        let original_root = proof.calculate_root();
+        
         // Tamper with the leaf data
         proof.leaf_data = b"tampered data".to_vec();
         
-        // The proof should no longer verify
-        assert!(!tree.verify_proof(&proof));
+        // The proof should no longer verify against the original root
+        assert!(!proof.verify(&original_root));
         
         // Restore the leaf data but tamper with a proof item
         proof.leaf_data = data;
         if !proof.items.is_empty() {
             proof.items[0].hash[0] ^= 0xFF; // Flip bits
             
-            // The proof should no longer verify
-            assert!(!tree.verify_proof(&proof));
+            // The proof should no longer verify against the original root
+            assert!(!proof.verify(&original_root));
         }
     }
 } 

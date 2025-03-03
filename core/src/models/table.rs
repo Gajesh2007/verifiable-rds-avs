@@ -132,8 +132,18 @@ impl TableSchema {
     
     /// Calculate the hash of the schema with domain separation
     pub fn calculate_hash(&self) -> [u8; 32] {
+        // Create a temporary copy without the hash field for serialization
+        let temp_schema = TableSchema {
+            name: self.name.clone(),
+            columns: self.columns.clone(),
+            primary_keys: self.primary_keys.clone(),
+            unique_constraints: self.unique_constraints.clone(),
+            foreign_keys: self.foreign_keys.clone(),
+            hash: None,
+        };
+        
         // Serialize the schema to JSON for hashing
-        let schema_json = serde_json::to_string(self).unwrap_or_default();
+        let schema_json = serde_json::to_string(&temp_schema).unwrap_or_default();
         
         // Hash with domain separation
         crypto::secure_hash(domains::TABLE_STATE, schema_json.as_bytes())
@@ -420,11 +430,12 @@ mod tests {
             default_value: Some("true".to_string()),
         });
         
-        // Calculate the hash for the modified schema
+        // Recalculate the hash for the modified schema
         let modified_hash = modified_schema.calculate_hash();
+        modified_schema.hash = Some(modified_hash);
         
         // The hashes should be different
-        assert_ne!(schema.hash.unwrap(), modified_hash);
+        assert_ne!(schema.hash.unwrap(), modified_schema.hash.unwrap());
     }
     
     #[test]

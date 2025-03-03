@@ -48,7 +48,7 @@ impl StringUtils {
         
         while let Some(c) = chars.next() {
             if c.is_uppercase() {
-                if !result.is_empty() && chars.peek().map_or(false, |next| !next.is_uppercase()) {
+                if !result.is_empty() {
                     result.push('_');
                 }
                 result.push(c.to_lowercase().next().unwrap());
@@ -154,16 +154,16 @@ impl StringUtils {
             return "0 B".to_string();
         }
         
+        if size < 1024 {
+            return format!("{} B", size);
+        }
+        
         let digits = (size as f64).log10() as usize;
         let unit = std::cmp::min(digits / 3, UNITS.len() - 1);
         
         let size_in_unit = size as f64 / 1024_f64.powi(unit as i32);
         
-        if unit == 0 {
-            format!("{} {}", size_in_unit, UNITS[unit])
-        } else {
-            format!("{:.2} {}", size_in_unit, UNITS[unit])
-        }
+        format!("{:.2} {}", size_in_unit, UNITS[unit])
     }
     
     /// Format a duration in milliseconds to a human-readable string

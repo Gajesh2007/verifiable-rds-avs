@@ -251,19 +251,32 @@ impl SchemaValidator {
                     
                     let mut table = schema_clone.get(table_name).unwrap().clone();
                     
-                    for col_op in column_operations {
-                        match col_op {
-                            ColumnDefinitionDdl::AddColumn(column_def) => {
+                    for op in column_operations {
+                        match op {
+                            ColumnDefinitionDdl::AddColumn(column) => {
                                 // Check column doesn't exist
-                                if table.columns.iter().any(|col| col.name == column_def.name) {
+                                if table.columns.iter().any(|col| col.name == column.name) {
                                     return Err(ValidationError::ColumnAlreadyExists(
-                                        column_def.name.clone(),
+                                        column.name.clone(),
                                         table_name.clone()
                                     ));
                                 }
                                 
-                                // Add column for subsequent operations
-                                table.columns.push(column_def.clone());
+                                // Check if adding a primary key column that is nullable
+                                if column.primary_key && column.nullable {
+                                    return Err(ValidationError::NullablePrimaryKey(
+                                        column.name.clone(),
+                                        table_name.clone()
+                                    ));
+                                }
+                                
+                                // Add column
+                                table.columns.push(column.clone());
+                                
+                                // If it's a primary key, add to primary keys
+                                if column.primary_key && !table.primary_keys.contains(&column.name) {
+                                    table.primary_keys.push(column.name.clone());
+                                }
                             }
                             ColumnDefinitionDdl::DropColumn(column_name) => {
                                 // Check column exists
@@ -438,10 +451,12 @@ impl SchemaValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::ddl::TableDefinition;
-    use super::super::{DdlStatement, MigrationDirection};
-    use uuid::Uuid;
+    use crate::models::{ColumnDefinition, ColumnType, TableSchema};
+    use crate::schema::{SchemaMigration, DdlOperation, ColumnDefinitionDdl, MigrationDirection};
+    use crate::schema::ddl::{DdlStatement, TableDefinition};
     use chrono::Utc;
+    use uuid::Uuid;
+    use std::collections::HashMap;
     
     #[test]
     fn test_validate_table() {

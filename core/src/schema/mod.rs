@@ -76,8 +76,20 @@ impl SchemaVersion {
     
     /// Calculate checksum of the schema
     pub fn calculate_checksum(&self) -> [u8; 32] {
+        // Create a temporary copy without the checksum field for serialization
+        let temp_schema = SchemaVersion {
+            id: self.id,
+            version: self.version,
+            created_at: self.created_at,
+            created_by: self.created_by.clone(),
+            description: self.description.clone(),
+            tables: self.tables.clone(),
+            migration: self.migration.clone(),
+            checksum: [0; 32], // Use a zero checksum for calculation
+        };
+        
         // Serialize schema to JSON for hashing
-        let schema_json = serde_json::to_string(&self).unwrap_or_default();
+        let schema_json = serde_json::to_string(&temp_schema).unwrap_or_default();
         
         // Hash with domain separation
         crypto::secure_hash("VERIFIABLEDB_SCHEMA", schema_json.as_bytes())
