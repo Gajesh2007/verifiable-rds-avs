@@ -1,8 +1,39 @@
-# Rust
-/target/
+# Rust build artifacts
+target/
 **/*.rs.bk
 Cargo.lock
-.cargo-ok
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Environment files
+.env
+.env.*
+
+# Debug files
+*.pdb
+*.log
+
+# Build output
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# Test coverage
+coverage/
+
+# Documentation
+docs/
+
+# Temporary files
+tmp/
+temp/
 
 # Solidity / Hardhat / Foundry
 /out/
@@ -11,7 +42,6 @@ Cargo.lock
 /forge-cache/
 /typechain/
 /typechain-types/
-node_modules/
 .env
 coverage
 coverage.json

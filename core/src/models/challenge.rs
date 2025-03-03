@@ -3,7 +3,6 @@
 //! This module provides data structures for representing verification challenges
 //! against blocks and transactions.
 
-use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};

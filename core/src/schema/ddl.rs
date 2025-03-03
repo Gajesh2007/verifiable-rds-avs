@@ -3,7 +3,6 @@
 //! This module provides data structures for representing database DDL statements
 //! such as CREATE TABLE, ALTER TABLE, etc.
 
-use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 
 use crate::models::{ColumnDefinition, ColumnType};

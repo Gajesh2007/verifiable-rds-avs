@@ -10,7 +10,6 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::crypto;
-use crate::crypto::SecureHasher;
 use super::domains;
 use super::row::Row;
 

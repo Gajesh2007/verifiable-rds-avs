@@ -4,7 +4,7 @@
 //! and concrete implementations using different hash algorithms.
 
 use sha2::{Sha256, Digest};
-use blake2::{Blake2b512, Blake2s256};
+use blake2::Blake2s256;
 use sha3::Keccak256;
 use std::fmt::Debug;
 

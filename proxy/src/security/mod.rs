@@ -19,7 +19,7 @@ pub mod traffic_analyzer;
 pub mod security_gateway;
 
 // Re-export important types
-pub use rate_limiter::RateLimiter;
+pub use rate_limiter::{RateLimiter, RateLimiterConfig};
 pub use dos_protection::DoSProtection;
 pub use anomaly_detector::AnomalyDetector;
 pub use traffic_analyzer::TrafficAnalyzer;

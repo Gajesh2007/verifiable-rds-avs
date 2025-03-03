@@ -3,14 +3,9 @@
 //! This module provides utilities for validating database schemas and migrations.
 
 use std::collections::{HashMap, HashSet};
-use std::error::Error;
-use std::fmt::{Display, Formatter, Result as FmtResult};
 use thiserror::Error;
-use sqlparser::ast::{Statement, TableConstraint, ColumnDef, DataType};
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::{Parser, ParserError};
 
-use crate::models::{TableSchema, ColumnDefinition, ColumnType};
+use crate::models::{TableSchema, ColumnType};
 use super::{SchemaMigration, DdlOperation, ColumnDefinitionDdl};
 
 /// Schema validation error

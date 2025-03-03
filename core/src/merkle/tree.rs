@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use serde::{Serialize, Deserialize};
 
-use crate::crypto::{self, SecureHasher, Sha256Hasher};
+use crate::crypto::{self};
 use super::domains;
 use super::proof::{SecureMerkleProof, ProofItem, ProofDirection};
 

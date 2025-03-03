@@ -4,10 +4,11 @@
 //! features of the Verifiable Database system.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 use reqwest::Client;
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Error type for verification operations
 #[derive(Error, Debug)]
@@ -407,7 +408,7 @@ impl VerificationClient {
             .json(&serde_json::json!({
                 "state_root": state_root,
                 "block_number": block_number,
-                "evidence": base64::encode(evidence),
+                "evidence": STANDARD.encode(evidence),
             }))
             .send()
             .await?;

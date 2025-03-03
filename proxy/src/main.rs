@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
         config.verification_enabled = verification_enabled;
     }
     if let Some(rate_limit) = args.rate_limit {
-        config.rate_limit = rate_limit;
+        config.rate_limiter_config.max_requests_per_second = rate_limit;
     }
 
     // Create proxy server
@@ -98,10 +98,15 @@ async fn main() -> Result<()> {
     info!("Backend PostgreSQL: {}:{}", server.config().pg_host, server.config().pg_port);
     
     // Start server
-    if let Err(e) = server.run().await {
-        error!("Server error: {}", e);
-        return Err(e.into());
-    }
+    server.start().await?;
+    
+    // Wait for Ctrl+C
+    tokio::signal::ctrl_c().await?;
+    
+    // Stop server
+    server.stop();
+    
+    info!("Server stopped");
     
     Ok(())
 } 

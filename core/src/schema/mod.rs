@@ -16,12 +16,9 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::error::Error;
-use std::fmt::{Display, Formatter, Result as FmtResult};
-use thiserror::Error;
-use log::{debug, warn, info};
 
 use crate::crypto;
-use crate::models::{TableSchema, ColumnType};
+use crate::models::TableSchema;
 
 /// Schema version
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,9 +190,9 @@ impl SchemaVersion {
                 DdlOperation::RenameTable(old_name, new_name) => {
                     // Rename the table
                     if let Some(table) = new_tables.remove(old_name) {
-                        let mut new_table = table.clone();
+                        let new_table = table.clone();
                         // Create a new table schema with the new name
-                        let mut new_table_schema = TableSchema::new(
+                        let new_table_schema = TableSchema::new(
                             new_name.clone(),
                             new_table.columns.clone(),
                             new_table.primary_keys.clone(),

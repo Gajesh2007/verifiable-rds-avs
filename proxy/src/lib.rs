@@ -30,10 +30,10 @@ pub mod transaction;
 // Re-export important types
 pub use config::ProxyConfig;
 pub use server::ProxyServer;
-pub use error::ProxyError;
+pub use error::{ProxyError, Result};
+pub use security::rate_limiter::{RateLimiter, RateLimiterConfig};
 
 // Re-export commonly used types
-pub use error::{ProxyError, Result};
 pub use protocol::{
     message::{FrontendMessage, BackendMessage, AuthenticationRequest},
     parser::MessageParser,
@@ -44,10 +44,10 @@ pub use protocol::{
     validator::{ProtocolValidator, ProtocolValidatorConfig},
 };
 pub use interception::{
-    analyzer::{QueryAnalyzer, QueryMetadata, QueryType},
-    execution::{QueryExecutor, ExecutionPlan, ExecutionResult},
-    rewrite::{QueryRewriter, RewriteAction, RewriteReason},
-    verification::{VerificationManager, VerificationResult, VerificationStatus},
+    QueryAnalyzer, QueryMetadata, QueryType,
+    QueryExecutor, ExecutionPlan, ExecutionResult,
+    QueryRewriter, RewriteAction, RewriteReason,
+    VerificationManager, VerificationResult, VerificationStatus,
 };
 pub use verification::{
     MerkleTree, SparseMerkleTree, MerkleProof, Verifiable,

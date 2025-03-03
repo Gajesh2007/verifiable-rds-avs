@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use postgres::{Client, Config, NoTls, Row};
+use postgres::{Client, NoTls, Row};
 use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use crate::verification::{VerificationClient, VerificationResult};
@@ -110,11 +110,9 @@ impl QueryClient {
     
     /// Connect to the database
     pub fn connect(&mut self) -> Result<()> {
-        let config = Config::from_str(&self.connection_string)
-            .map_err(|e| QueryError::Connection(e.to_string()))?
-            .connect_timeout(self.timeout);
-            
-        self.client = Some(config.connect(NoTls)?);
+        // Connect directly using the connection string
+        let client = Client::connect(&self.connection_string, NoTls)?;
+        self.client = Some(client);
         
         Ok(())
     }
@@ -180,7 +178,7 @@ impl QueryClient {
     /// Execute a query and return a single value
     pub async fn query_single<T>(&mut self, query: &str) -> Result<T>
     where
-        T: postgres::types::FromSql,
+        for<'a> T: postgres::types::FromSql<'a>,
     {
         // Ensure we're connected
         if self.client.is_none() {
@@ -294,9 +292,16 @@ fn row_to_map(row: &Row) -> HashMap<String, serde_json::Value> {
                 None => serde_json::Value::Null,
             }
         } else if type_info.name() == "json" || type_info.name() == "jsonb" {
-            let val: Option<serde_json::Value> = row.get(name);
+            // Get the JSON as a string first, then parse it
+            let val: Option<String> = row.get(name);
             match val {
-                Some(v) => v,
+                Some(v) => {
+                    // Parse the JSON string
+                    match serde_json::from_str(&v) {
+                        Ok(json_val) => json_val,
+                        Err(_) => serde_json::Value::String(v), // Fallback: treat as string
+                    }
+                },
                 None => serde_json::Value::Null,
             }
         } else {
