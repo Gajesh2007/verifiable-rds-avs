@@ -1,0 +1,387 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.25;
+
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/Pausable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@eigenlayer/contracts/interfaces/IServiceManager.sol";
+import "@eigenlayer/contracts/interfaces/IRegistryCoordinator.sol";
+import "@eigenlayer/contracts/interfaces/IBLSRegistryCoordinatorWithIndices.sol";
+
+/**
+ * @title VerifiableDBAvs
+ * @dev Contract for verifiable database AVS built on EigenLayer
+ * 
+ * This contract serves as the AVS for the verifiable database system,
+ * managing state commitments, operator registration, and verification challenges.
+ */
+contract VerifiableDBAvs is Ownable, Pausable, ReentrancyGuard {
+    // EigenLayer interfaces
+    IServiceManager public serviceManager;
+    IRegistryCoordinator public registryCoordinator;
+
+    // Version of the contract
+    string public constant VERSION = "0.1.0";
+
+    // Database state commitment data
+    struct StateCommitment {
+        uint256 sequence;
+        bytes32 stateRoot;
+        uint256 timestamp;
+        address committedBy;
+        bytes metadata;
+    }
+
+    // Transaction verification challenge data
+    struct Challenge {
+        bytes32 challengeId;
+        uint256 transactionId;
+        bytes32 preStateRoot;
+        bytes32 postStateRoot;
+        address challenger;
+        uint256 bondAmount;
+        ChallengeStatus status;
+        uint256 timestamp;
+        uint256 expiryTime;
+        bytes proof;
+        string result;
+    }
+
+    // Status of a challenge
+    enum ChallengeStatus {
+        Submitted,
+        Processing,
+        Accepted,
+        Rejected,
+        Expired
+    }
+
+    // Operator data
+    struct Operator {
+        address operatorAddress;
+        bool isActive;
+        uint256 registeredAt;
+        uint256 stakeAmount;
+    }
+
+    // Mapping from sequence number to state commitment
+    mapping(uint256 => StateCommitment) public stateCommitments;
+    
+    // Mapping from challenge ID to challenge data
+    mapping(bytes32 => Challenge) public challenges;
+    
+    // Mapping from operator address to operator data
+    mapping(address => Operator) public operators;
+    
+    // Current sequence number
+    uint256 public currentSequence;
+    
+    // Challenge bond parameters
+    uint256 public minChallengeBond;
+    uint256 public maxChallengeBond;
+    uint256 public challengeExpiration;
+    
+    // List of active operators
+    address[] public activeOperators;
+    
+    // Events
+    event StateCommitted(uint256 indexed sequence, bytes32 stateRoot, address indexed committedBy, uint256 timestamp);
+    event ChallengeSubmitted(bytes32 indexed challengeId, uint256 indexed transactionId, address indexed challenger, uint256 bondAmount);
+    event ChallengeResolved(bytes32 indexed challengeId, ChallengeStatus status, string result);
+    event OperatorRegistered(address indexed operator, uint256 stakeAmount);
+    event OperatorDeregistered(address indexed operator);
+
+    /**
+     * @dev Constructor to initialize the contract with EigenLayer components
+     * @param _serviceManager Address of the EigenLayer ServiceManager
+     * @param _registryCoordinator Address of the EigenLayer RegistryCoordinator
+     */
+    constructor(address _serviceManager, address _registryCoordinator) Ownable(msg.sender) {
+        serviceManager = IServiceManager(_serviceManager);
+        registryCoordinator = IRegistryCoordinator(_registryCoordinator);
+        
+        // Set default values
+        minChallengeBond = 0.1 ether;
+        maxChallengeBond = 10 ether;
+        challengeExpiration = 7 days;
+    }
+
+    /**
+     * @dev Pause the contract
+     * @notice Only the owner can pause the contract
+     */
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /**
+     * @dev Unpause the contract
+     * @notice Only the owner can unpause the contract
+     */
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /**
+     * @dev Register an operator with the AVS
+     * @notice Operators must provide stake and be registered with EigenLayer
+     */
+    function registerOperator() external payable whenNotPaused nonReentrant {
+        // Check if the operator is already registered
+        require(!operators[msg.sender].isActive, "Operator already registered");
+        
+        // Check if the stake is sufficient
+        require(msg.value >= minChallengeBond, "Insufficient stake");
+        
+        // Create the operator record
+        Operator memory newOperator = Operator({
+            operatorAddress: msg.sender,
+            isActive: true,
+            registeredAt: block.timestamp,
+            stakeAmount: msg.value
+        });
+        
+        // Store the operator data
+        operators[msg.sender] = newOperator;
+        activeOperators.push(msg.sender);
+        
+        // Emit registration event
+        emit OperatorRegistered(msg.sender, msg.value);
+    }
+
+    /**
+     * @dev Deregister an operator from the AVS
+     * @notice Only registered operators can deregister themselves
+     */
+    function deregisterOperator() external nonReentrant {
+        // Check if the operator is registered
+        require(operators[msg.sender].isActive, "Operator not registered");
+        
+        // Mark the operator as inactive
+        operators[msg.sender].isActive = false;
+        
+        // Remove from active operators array
+        for (uint256 i = 0; i < activeOperators.length; i++) {
+            if (activeOperators[i] == msg.sender) {
+                // Replace with the last element and pop
+                activeOperators[i] = activeOperators[activeOperators.length - 1];
+                activeOperators.pop();
+                break;
+            }
+        }
+        
+        // Return the stake
+        uint256 stake = operators[msg.sender].stakeAmount;
+        operators[msg.sender].stakeAmount = 0;
+        
+        // Transfer the stake back to the operator
+        (bool success, ) = payable(msg.sender).call{value: stake}("");
+        require(success, "Transfer failed");
+        
+        // Emit deregistration event
+        emit OperatorDeregistered(msg.sender);
+    }
+
+    /**
+     * @dev Commit a state root to the AVS
+     * @param stateRoot The root hash of the database state
+     * @param metadata Additional metadata for the commitment
+     * @notice Only registered operators can commit state roots
+     */
+    function commitState(bytes32 stateRoot, bytes calldata metadata) external whenNotPaused {
+        // Check if the caller is a registered operator
+        require(operators[msg.sender].isActive, "Not a registered operator");
+        
+        // Increment the sequence number
+        currentSequence++;
+        
+        // Create the state commitment
+        StateCommitment memory commitment = StateCommitment({
+            sequence: currentSequence,
+            stateRoot: stateRoot,
+            timestamp: block.timestamp,
+            committedBy: msg.sender,
+            metadata: metadata
+        });
+        
+        // Store the commitment
+        stateCommitments[currentSequence] = commitment;
+        
+        // Emit commitment event
+        emit StateCommitted(currentSequence, stateRoot, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @dev Submit a verification challenge
+     * @param transactionId ID of the transaction being challenged
+     * @param preStateRoot State root before the transaction
+     * @param postStateRoot State root after the transaction
+     * @param proof Cryptographic proof for the challenge
+     * @notice Anyone can submit a challenge with sufficient bond
+     */
+    function submitChallenge(
+        uint256 transactionId,
+        bytes32 preStateRoot,
+        bytes32 postStateRoot,
+        bytes calldata proof
+    ) external payable whenNotPaused nonReentrant {
+        // Calculate the bond amount based on transaction importance
+        uint256 bondAmount = calculateBondAmount(transactionId);
+        require(msg.value >= bondAmount, "Insufficient bond");
+        
+        // Generate a unique challenge ID using hash
+        bytes32 challengeId = keccak256(abi.encodePacked(transactionId, preStateRoot, postStateRoot, msg.sender, block.timestamp));
+        
+        // Ensure challenge doesn't already exist
+        require(challenges[challengeId].challengeId == bytes32(0), "Challenge already exists");
+        
+        // Create the challenge
+        Challenge memory challenge = Challenge({
+            challengeId: challengeId,
+            transactionId: transactionId,
+            preStateRoot: preStateRoot,
+            postStateRoot: postStateRoot,
+            challenger: msg.sender,
+            bondAmount: msg.value,
+            status: ChallengeStatus.Submitted,
+            timestamp: block.timestamp,
+            expiryTime: block.timestamp + challengeExpiration,
+            proof: proof,
+            result: ""
+        });
+        
+        // Store the challenge
+        challenges[challengeId] = challenge;
+        
+        // Emit challenge submission event
+        emit ChallengeSubmitted(challengeId, transactionId, msg.sender, msg.value);
+    }
+
+    /**
+     * @dev Respond to a verification challenge
+     * @param challengeId ID of the challenge
+     * @param responseProof Proof responding to the challenge
+     * @param isValid Whether the challenge is valid
+     * @notice Only registered operators can respond to challenges
+     */
+    function respondToChallenge(
+        bytes32 challengeId,
+        bytes calldata responseProof,
+        bool isValid
+    ) external whenNotPaused nonReentrant {
+        // Check if the caller is a registered operator
+        require(operators[msg.sender].isActive, "Not a registered operator");
+        
+        // Get the challenge
+        Challenge storage challenge = challenges[challengeId];
+        
+        // Ensure challenge exists and is in correct state
+        require(challenge.challengeId != bytes32(0), "Challenge not found");
+        require(challenge.status == ChallengeStatus.Submitted, "Challenge not in submitted state");
+        require(block.timestamp < challenge.expiryTime, "Challenge expired");
+        
+        // Update the challenge status
+        if (isValid) {
+            challenge.status = ChallengeStatus.Accepted;
+            challenge.result = "Challenge accepted - transaction verification failed";
+            
+            // Transfer the bond to the challenger
+            (bool success, ) = payable(challenge.challenger).call{value: challenge.bondAmount}("");
+            require(success, "Transfer failed");
+        } else {
+            challenge.status = ChallengeStatus.Rejected;
+            challenge.result = "Challenge rejected - transaction verification succeeded";
+            
+            // Keep the bond in the contract (could be distributed to operators)
+        }
+        
+        // Emit challenge resolution event
+        emit ChallengeResolved(challengeId, challenge.status, challenge.result);
+    }
+
+    /**
+     * @dev Resolve expired challenges
+     * @param challengeId ID of the challenge
+     * @notice Anyone can call this to resolve expired challenges
+     */
+    function resolveExpiredChallenge(bytes32 challengeId) external whenNotPaused nonReentrant {
+        // Get the challenge
+        Challenge storage challenge = challenges[challengeId];
+        
+        // Ensure challenge exists and is in correct state
+        require(challenge.challengeId != bytes32(0), "Challenge not found");
+        require(challenge.status == ChallengeStatus.Submitted, "Challenge not in submitted state");
+        require(block.timestamp >= challenge.expiryTime, "Challenge not expired");
+        
+        // Update the challenge status
+        challenge.status = ChallengeStatus.Expired;
+        challenge.result = "Challenge expired without response";
+        
+        // Return the bond to the challenger
+        (bool success, ) = payable(challenge.challenger).call{value: challenge.bondAmount}("");
+        require(success, "Transfer failed");
+        
+        // Emit challenge resolution event
+        emit ChallengeResolved(challengeId, challenge.status, challenge.result);
+    }
+
+    /**
+     * @dev Get the latest state root
+     * @return The latest committed state root
+     */
+    function getLatestStateRoot() external view returns (bytes32) {
+        require(currentSequence > 0, "No state commitments yet");
+        return stateCommitments[currentSequence].stateRoot;
+    }
+
+    /**
+     * @dev Get all active operators
+     * @return Array of active operator addresses
+     */
+    function getActiveOperators() external view returns (address[] memory) {
+        return activeOperators;
+    }
+
+    /**
+     * @dev Calculate the bond amount for a challenge
+     * @param transactionId ID of the transaction
+     * @return The required bond amount
+     */
+    function calculateBondAmount(uint256 transactionId) public view returns (uint256) {
+        // In a real implementation, this would use a bonding curve based on transaction value
+        // For now, return a fixed amount between min and max
+        uint256 bondAmount = minChallengeBond + (transactionId % (maxChallengeBond - minChallengeBond));
+        return bondAmount;
+    }
+
+    /**
+     * @dev Update the challenge bond parameters
+     * @param _minChallengeBond Minimum bond amount
+     * @param _maxChallengeBond Maximum bond amount
+     * @param _challengeExpiration Challenge expiration time
+     * @notice Only the owner can update these parameters
+     */
+    function updateChallengeParameters(
+        uint256 _minChallengeBond,
+        uint256 _maxChallengeBond,
+        uint256 _challengeExpiration
+    ) external onlyOwner {
+        require(_minChallengeBond <= _maxChallengeBond, "Min bond must be <= max bond");
+        require(_challengeExpiration > 0, "Expiration must be > 0");
+        
+        minChallengeBond = _minChallengeBond;
+        maxChallengeBond = _maxChallengeBond;
+        challengeExpiration = _challengeExpiration;
+    }
+
+    /**
+     * @dev Withdraw excess funds from the contract
+     * @param amount Amount to withdraw
+     * @notice Only the owner can withdraw funds
+     */
+    function withdraw(uint256 amount) external onlyOwner nonReentrant {
+        require(amount <= address(this).balance, "Insufficient balance");
+        (bool success, ) = payable(owner()).call{value: amount}("");
+        require(success, "Transfer failed");
+    }
+} 

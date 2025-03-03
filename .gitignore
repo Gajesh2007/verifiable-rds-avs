@@ -1,0 +1,79 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+.cargo-ok
+
+# Solidity / Hardhat / Foundry
+/out/
+/cache/
+/artifacts/
+/forge-cache/
+/typechain/
+/typechain-types/
+node_modules/
+.env
+coverage
+coverage.json
+.coverage_artifacts
+.coverage_cache
+.coverage_contracts
+*.log
+
+# TypeScript
+dist/
+*.tsbuildinfo
+.eslintcache
+.parcel-cache
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# IDEs and editors
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.code-workspace
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+/data/
+/logs/
+/tmp/
+/.postgres/
+/.pgdata/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log* 
+
+AmazonRDSVerifiableDatabaseAVSSpec.md

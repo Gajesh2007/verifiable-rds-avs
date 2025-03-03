@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5433:5432"  # Use 5433 on host to avoid conflicts with the proxy
+    environment:
+      POSTGRES_USER: verifiable
+      POSTGRES_PASSWORD: verifiable
+      POSTGRES_DB: verifiable_db
+    volumes:
+      - ./.pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U verifiable"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  proxy:
+    build:
+      context: .
+      dockerfile: ./proxy/Dockerfile
+    ports:
+      - "5432:5432"  # Expose proxy on standard PostgreSQL port
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: verifiable
+      PG_PASSWORD: verifiable
+      PG_DATABASE: verifiable_db
+      VERIFICATION_ENABLED: "true"
+      RATE_LIMIT: "1000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  verification:
+    build:
+      context: .
+      dockerfile: ./verification/Dockerfile
+    ports:
+      - "8080:8080"  # API port
+    environment:
+      PG_HOST: postgres
+      PG_PORT: 5432
+      PG_USER: verifiable
+      PG_PASSWORD: verifiable
+      PG_DATABASE: verifiable_db
+      API_PORT: 8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      proxy:
+        condition: service_started
+    restart: unless-stopped
+
+  hardhat:
+    build:
+      context: ./contracts
+      dockerfile: Dockerfile
+    ports:
+      - "8545:8545"  # Hardhat node
+    volumes:
+      - ./contracts:/app
+    command: npx hardhat node
+
+volumes:
+  pgdata: 

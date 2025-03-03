@@ -1,0 +1,69 @@
+[package]
+name = "verifiable-db-proxy"
+version = "0.1.0"
+edition = "2021"
+description = "PostgreSQL wire protocol proxy for Verifiable RDS AVS"
+license = "MIT"
+
+[dependencies]
+verifiable-db-core = { path = "../core" }
+
+# PostgreSQL wire protocol
+bytes = "1.5.0"
+byteorder = "1.5.0"
+postgres-protocol = "0.6.6"
+postgres-types = "0.2.6"
+
+# Async runtime and networking
+tokio = { version = "1.35.1", features = ["full"] }
+tokio-util = { version = "0.7.10", features = ["codec"] }
+tokio-postgres = { version = "0.7.10", features = ["with-serde_json-1", "with-uuid-1"] }
+
+# Error handling
+thiserror = "1.0.56"
+anyhow = "1.0.79"
+
+# Utilities
+log = "0.4.20"
+env_logger = "0.11.0"
+clap = { version = "4.4.13", features = ["derive"] }
+config = "0.13.4"
+dotenvy = "0.15.7"
+metrics = "0.21.1"
+metrics-exporter-prometheus = "0.12.1"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+# Security features
+governor = "0.6.0"
+ipnet = "2.9.0"
+rusqlite = { version = "0.30.0", features = ["bundled"] }
+sqlparser = "0.43.1"
+
+# Cryptography and verification
+sha2 = "0.10.8"
+merkle_light = "0.4.0"
+getrandom = "0.2.12"
+uuid = { version = "1.6.1", features = ["v4"] }
+rand = "0.8.5"
+ed25519-dalek = "2.1.0"
+hex = "0.4.3"
+
+# EigenLayer SDK
+eigensdk = { version = "0.3.0", features = ["full"] }
+
+serde = { version = "1.0.193", features = ["derive"] }
+serde_json = "1.0.111"
+
+# For testing
+[dev-dependencies]
+criterion = "0.5.1"
+mockall = "0.12.1"
+proptest = "1.4.0"
+rstest = "0.18.2"
+tempfile = "3.8.1"
+test-context = "0.1.4"
+
+[[bin]]
+name = "verifiable-db-proxy"
+path = "src/main.rs" 

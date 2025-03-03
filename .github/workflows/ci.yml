@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  rust-checks:
+    name: Rust - Lint & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [core, proxy, verification, client]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install stable Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt, clippy
+      
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.component }}-${{ hashFiles('**/Cargo.lock') }}
+          
+      - name: Check formatting
+        working-directory: ./${{ matrix.component }}
+        run: cargo fmt --all -- --check
+        
+      - name: Run clippy
+        working-directory: ./${{ matrix.component }}
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        
+      - name: Run tests
+        working-directory: ./${{ matrix.component }}
+        run: cargo test --all-features
+
+  solidity-checks:
+    name: Solidity - Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: contracts/package-lock.json
+          
+      - name: Install dependencies
+        working-directory: ./contracts
+        run: npm ci
+        
+      - name: Run linter
+        working-directory: ./contracts
+        run: npm run lint
+        
+      - name: Run tests
+        working-directory: ./contracts
+        run: npm test
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/init@v2
+        with:
+          languages: rust, javascript
+          
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v2
+        
+      - name: Run cargo-audit
+        uses: actions-rs/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [proxy, verification]
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./${{ matrix.component }}/Dockerfile
+          push: false
+          tags: verifiable-rds-avs/${{ matrix.component }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max 
