@@ -41,12 +41,12 @@ where
 
 /// Retry a fallible operation with exponential backoff
 pub async fn retry_with_backoff<F, Fut, T, E>(
-    mut operation: F,
+    operation: F,
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<T, E>
 where
-    F: FnMut() -> Fut,
+    F: Fn() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
     let mut retries = 0;
@@ -120,30 +120,19 @@ mod tests {
     
     #[tokio::test]
     async fn test_retry_with_backoff() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        
         // Test successful operation
-        let mut counter = 0;
+        let counter1 = Arc::new(AtomicU32::new(0));
+        let counter1_clone = counter1.clone();
+        
         let result = retry_with_backoff(
-            || async {
-                counter += 1;
-                Ok::<_, &'static str>(counter)
-            },
-            3,
-            Duration::from_millis(1),
-        )
-        .await;
-        
-        assert_eq!(result, Ok(1));
-        assert_eq!(counter, 1); // Operation succeeded on first try
-        
-        // Test failing operation with retries
-        let mut counter = 0;
-        let result: Result<(), &'static str> = retry_with_backoff(
-            || async {
-                counter += 1;
-                if counter < 3 {
-                    Err("not ready yet")
-                } else {
-                    Ok(())
+            || {
+                let c = counter1_clone.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, &'static str>(c.load(Ordering::SeqCst))
                 }
             },
             3,
@@ -151,23 +140,52 @@ mod tests {
         )
         .await;
         
-        assert_eq!(result, Ok(()));
-        assert_eq!(counter, 3); // Operation succeeded after 3 tries
+        assert_eq!(result, Ok(1));
+        assert_eq!(counter1.load(Ordering::SeqCst), 1); // Operation succeeded on first try
         
-        // Test operation that always fails
-        let mut counter = 0;
-        let result: Result<(), &'static str> = retry_with_backoff(
-            || async {
-                counter += 1;
-                Err("always fails")
+        // Test failing operation with retries
+        let counter2 = Arc::new(AtomicU32::new(0));
+        let counter2_clone = counter2.clone();
+        
+        let result: Result<u32, &'static str> = retry_with_backoff(
+            || {
+                let c = counter2_clone.clone();
+                async move {
+                    let val = c.fetch_add(1, Ordering::SeqCst) + 1;
+                    if val < 3 {
+                        Err("not ready yet")
+                    } else {
+                        Ok(val)
+                    }
+                }
             },
-            2,
+            3,
+            Duration::from_millis(1),
+        )
+        .await;
+        
+        assert_eq!(result, Ok(3));
+        assert_eq!(counter2.load(Ordering::SeqCst), 3); // Operation succeeded after 3 tries
+        
+        // Test failing operation (max retries exceeded)
+        let counter3 = Arc::new(AtomicU32::new(0));
+        let counter3_clone = counter3.clone();
+        
+        let result: Result<u32, &'static str> = retry_with_backoff(
+            || {
+                let c = counter3_clone.clone();
+                async move {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    Err("always fails")
+                }
+            },
+            3,
             Duration::from_millis(1),
         )
         .await;
         
         assert_eq!(result, Err("always fails"));
-        assert_eq!(counter, 3); // Initial attempt + 2 retries
+        assert_eq!(counter3.load(Ordering::SeqCst), 4); // Initial attempt + 3 retries
     }
     
     #[test]
