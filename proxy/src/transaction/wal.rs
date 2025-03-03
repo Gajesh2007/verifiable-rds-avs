@@ -137,6 +137,7 @@ pub enum TransactionStatus {
 }
 
 /// WAL capture manager
+#[derive(Debug)]
 pub struct WalCaptureManager {
     /// Connection to PostgreSQL for WAL streaming
     // In a real implementation, this would connect to PostgreSQL's logical replication

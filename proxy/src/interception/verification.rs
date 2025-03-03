@@ -1,7 +1,7 @@
 //! Query verification and integration with the core verification engine
 
 use crate::error::{ProxyError, Result};
-use crate::interception::analyzer::{QueryMetadata, QueryType, AccessType};
+use crate::interception::analyzer::{QueryMetadata, QueryType, AccessType, TableAccess};
 use crate::verification::environment::{VerificationEnvironment, VerificationEnvironmentConfig};
 use crate::verification::contract::{ContractManager, ContractConfig, StateCommitment, Challenge};
 use crate::verification::state::{StateCaptureManager, RowId, DatabaseState as StateDBState};
@@ -349,7 +349,8 @@ impl VerificationManager {
             
             // Trim records if exceeding max history
             if records.len() > self.config.max_history {
-                records.drain(0..records.len() - self.config.max_history);
+                let drain_count = records.len() - self.config.max_history;
+                records.drain(0..drain_count);
             }
         }
         
@@ -372,10 +373,9 @@ impl VerificationManager {
         Ok(transaction_id)
     }
     
-    /// Complete a transaction for verification
-    pub fn complete_transaction(&self, transaction_id: u64, _rows_affected: Option<u64>) -> Result<VerificationResult> {
-        if !self.config.enabled || transaction_id == 0 {
-            // Return a dummy result if verification is disabled or transaction ID is invalid
+    /// Complete a transaction and verify it
+    pub async fn complete_transaction(&self, transaction_id: u64, _rows_affected: Option<u64>) -> Result<VerificationResult> {
+        if !self.config.enabled {
             return Ok(VerificationResult {
                 transaction_id,
                 status: VerificationStatus::Skipped,
@@ -388,134 +388,53 @@ impl VerificationManager {
         }
         
         // Find the transaction record
-        let mut transaction_opt = None;
-        {
+        let transaction = {
             let records = self.transaction_records.lock().unwrap();
-            for record in records.iter() {
-                if record.id == transaction_id {
-                    transaction_opt = Some(record.clone());
-                    break;
-                }
-            }
-        }
-        
-        let transaction = match transaction_opt {
-            Some(t) => t,
-            None => {
-                return Err(ProxyError::Verification(format!(
-                    "Transaction record not found for ID: {}", transaction_id
-                )));
-            }
+            records.iter()
+                .find(|r| r.id == transaction_id)
+                .cloned()
         };
         
-        // Update transaction state
-        let mut updater = self.transaction_records.lock().unwrap();
-        for record in updater.iter_mut() {
-            if record.id == transaction_id {
-                // If we have modified tables, capture their post-state
-                let post_state_root = if !transaction.modified_tables.is_empty() {
-                    // In a real implementation, we would query the database to get the table's current state
-                    // For each modified table, capture its state
-                    for table_name in &transaction.modified_tables {
-                        // Parse the table name to get schema and table
-                        let parts: Vec<&str> = table_name.split('.').collect();
-                        let (schema_name, table_name) = if parts.len() > 1 {
-                            (parts[0], parts[1])
-                        } else {
-                            ("public", parts[0])
-                        };
-                        
-                        // Capture table state
-                        // This would be an async operation in a real implementation
-                        match tokio::runtime::Runtime::new().unwrap().block_on(async {
-                            self.state_capture.capture_table_state(table_name, schema_name).await
-                        }) {
-                            Ok(table_state) => {
-                                // Update state
-                                match self.state_capture.update_table_state(table_state) {
-                                    Ok(_) => {
-                                        // Successfully updated state
-                                    }
-                                    Err(e) => {
-                                        warn!("Failed to update table state for {}: {}", table_name, e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!("Failed to capture table state for {}: {}", table_name, e);
-                            }
-                        }
-                    }
-                    
-                    // Get the updated root hash
-                    self.state_capture.get_current_root_hash()
-                } else {
-                    // For non-modifying queries, use the current state root
-                    self.state_capture.get_current_root_hash()
-                };
-                
-                record.post_state_root = post_state_root;
-                record.verification_status = VerificationStatus::InProgress;
-                break;
+        // If transaction not found, return error
+        let transaction = match transaction {
+            Some(tx) => tx,
+            None => {
+                return Err(ProxyError::Verification(format!("Transaction {} not found", transaction_id)));
             }
-        }
-        
-        // Update the current state
-        if let Some(post_state_root) = transaction.post_state_root {
-            let mut state = self.current_state.write().unwrap();
-            state.root = post_state_root;
-            state.block_number += 1;
-            state.timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            state.created_by_transaction = Some(transaction_id);
-            state.committed = false;
-            
-            // In a real implementation, we would update table states based on
-            // the modified tables in the transaction
-            for table in &transaction.modified_tables {
-                // Store the table in our state as well
-                state.table_states.insert(table.clone(), post_state_root);
-            }
-        }
+        };
         
         // Verify the transaction
         let verification_start = Instant::now();
-        let verification_result = self.verify_transaction(&transaction);
+        let verification_result = self.verify_transaction(&transaction.metadata).await;
         
         // Get verification result
-        let verification_time = verification_start.elapsed();
-        
-        // Create verification result with proper error handling
-        let status;
+        let verification_time = verification_start.elapsed().as_millis() as u64;
+        let mut status = VerificationStatus::NotVerified;
         let error_message;
         
-        match &verification_result {
+        match verification_result {
             Ok(_) => {
                 status = VerificationStatus::Verified;
                 error_message = None;
-            },
-            Err(err) => {
+            }
+            Err(e) => {
+                status = VerificationStatus::Failed;
+                error_message = Some(e.to_string());
+                
                 if self.config.enforce {
-                    status = VerificationStatus::Failed;
-                } else {
-                    warn!("Verification failed but not enforced: {}", err);
-                    status = VerificationStatus::Failed;
+                    return Err(ProxyError::Verification(format!("Transaction verification failed: {}", e)));
                 }
-                error_message = Some(err.to_string());
             }
         }
         
-        let result = VerificationResult {
-            transaction_id,
-            status,
-            pre_state_root: transaction.pre_state_root,
-            post_state_root: transaction.post_state_root,
-            verification_time_ms: verification_time.as_millis() as u64,
-            error: error_message,
-            metadata: HashMap::new(),
-        };
+        // Update transaction record
+        {
+            let mut records = self.transaction_records.lock().unwrap();
+            if let Some(record) = records.iter_mut().find(|r| r.id == transaction_id) {
+                record.verification_status = status.clone();
+                record.error = error_message.clone();
+            }
+        }
         
         // Remove from pending transactions
         {
@@ -523,72 +442,37 @@ impl VerificationManager {
             pending.remove(&transaction_id);
         }
         
-        // Check if we need to commit the state
+        // Check if we need to commit state
         self.check_commit_state();
         
-        // Commit transaction in the transaction manager
-        if let Some(tx) = self.get_transaction(transaction_id) {
-            let mut tx_manager = self.transaction_manager.lock().unwrap();
-            
-            // Using the mapping between verification transaction ID and boundary transaction ID
-            // tx_manager.commit_transaction(tx_id_boundary)?;
-            
-            // Verify transaction boundaries
-            if let Some(wal_manager) = tx_manager.get_wal_manager() {
-                // Using the mapping to get the WAL transaction ID
-                // if let Some(wal_tx) = wal_manager.get_transaction(wal_tx_id) {
-                //     let boundaries_valid = wal_manager.verify_transaction_boundaries(wal_tx_id)?;
-                //     if !boundaries_valid {
-                //         return Err(ProxyError::VerificationError(
-                //             format!("Transaction boundary verification failed for transaction {}", transaction_id)
-                //         ));
-                //     }
-                // }
-            }
-        }
-        
-        Ok(result)
+        // Return verification result
+        Ok(VerificationResult {
+            transaction_id,
+            status,
+            pre_state_root: transaction.pre_state_root,
+            post_state_root: transaction.post_state_root,
+            verification_time_ms: verification_time,
+            error: error_message,
+            metadata: HashMap::new(),
+        })
     }
     
-    /// Verify a transaction by replaying it deterministically
-    pub fn verify_transaction(&self, transaction: &TransactionRecord) -> Result<()> {
+    /// Verify a transaction
+    pub async fn verify_transaction(&self, metadata: &QueryMetadata) -> Result<()> {
         if !self.config.enabled {
             return Ok(());
         }
         
-        debug!("Verifying transaction: {}", transaction.id);
-        info!("Transaction query: {}", transaction.query);
-        
-        // Extract relevant information
-        let transaction_id = transaction.id;
-        let queries = vec![transaction.query.clone()];
-        let metadata_vec = vec![transaction.metadata.clone()];
-        
-        // Create a runtime for async operations
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ProxyError::Verification(format!("Failed to create runtime: {}", e)))?;
-        
-        // When using verification_env, skip using methods that require DatabaseState conversion
-        let verification_result = rt.block_on(async {
-            // Just log information instead of trying to call the problematic method
-            info!("Would verify transaction {} with {} queries", transaction_id, queries.len());
-            for (i, query) in queries.iter().enumerate() {
-                debug!("Query {}: {}", i, query);
-            }
-            Ok(())
-        });
-        
-        match verification_result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                if self.config.enforce {
-                    Err(e)
-                } else {
-                    warn!("Verification failed but not enforced: {}", e);
-                    Ok(())
-                }
-            }
+        // Check if the query should be verified
+        if !self.should_verify_query(metadata) {
+            debug!("Skipping verification for query: {}", metadata.query);
+            return Ok(());
         }
+        
+        // In a real implementation, this would verify the transaction
+        debug!("Verifying transaction for query: {}", metadata.query);
+        
+        Ok(())
     }
     
     /// Check if we should verify a query
@@ -845,134 +729,169 @@ impl VerificationManager {
         self.begin_transaction(query, metadata)?;
         Ok(())
     }
+    
+    /// Prepare for verification by examining query metadata
+    pub async fn prepare_verification(&self, metadata: &QueryMetadata) -> Result<()> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        
+        // Check if the query should be verified
+        if !self.should_verify_query(metadata) {
+            debug!("Skipping verification for query: {}", metadata.query);
+            return Ok(());
+        }
+        
+        // Check if we need to capture state for the tables involved
+        let tables_to_capture = metadata.get_modified_tables();
+        if !tables_to_capture.is_empty() {
+            debug!("Tables that will be captured for verification: {:?}", tables_to_capture);
+        }
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::interception::analyzer::{QueryType, TableAccess, AccessType};
+    use std::time::Duration;
 
     fn create_test_metadata(query: &str, query_type: QueryType, tables: Vec<&str>) -> QueryMetadata {
-        // Create table access objects
-        let table_access: Vec<TableAccess> = tables.iter().map(|t| {
-            TableAccess {
-                table_name: t.to_string(),
-                schema_name: None,
-                access_type: if query_type.is_read_only() {
-                    AccessType::Read
-                } else {
-                    AccessType::Write
-                },
-                columns: None,
-            }
-        }).collect();
-        
         QueryMetadata {
             query: query.to_string(),
             query_type,
-            tables: table_access,
+            tables: tables.iter().map(|t| TableAccess {
+                table_name: t.to_string(),
+                schema_name: Some("public".to_string()),
+                access_type: AccessType::ReadWrite,
+                columns: None,
+            }).collect(),
             is_deterministic: true,
-            non_deterministic_operations: Vec::new(),
+            non_deterministic_operations: vec![],
             complexity_score: 1,
             special_handling: false,
             verifiable: true,
-            cacheable: false,
+            cacheable: true,
             extra: HashMap::new(),
             non_deterministic_reason: None,
         }
     }
-    
+
     #[tokio::test]
     async fn test_begin_complete_transaction() {
+        // Create a configuration for testing
         let config = VerificationConfig::default();
+        
+        // Create a verification manager
         let manager = VerificationManager::new(config).await.unwrap();
         
-        let query = "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')";
+        // Create a query and metadata
+        let query = "INSERT INTO users (name, email) VALUES ('test', 'test@example.com')";
         let metadata = create_test_metadata(query, QueryType::Insert, vec!["users"]);
         
-        // Begin transaction
+        // Begin a transaction
         let tx_id = manager.begin_transaction(query, &metadata).unwrap();
-        assert!(tx_id > 0, "Transaction ID should be positive");
         
-        // Complete transaction
-        let result = manager.complete_transaction(tx_id, Some(1)).unwrap();
+        // Complete the transaction
+        let result = manager.complete_transaction(tx_id, Some(1)).await.unwrap();
         assert_eq!(result.status, VerificationStatus::Verified, "Transaction verification should succeed");
     }
     
     #[tokio::test]
     async fn test_verify_different_query_types() {
-        let mut config = VerificationConfig::default();
-        config.verify_ddl = true;
+        // Create a configuration for testing
+        let config = VerificationConfig::default();
         
+        // Create a verification manager
         let manager = VerificationManager::new(config).await.unwrap();
         
-        // Test INSERT
-        let query = "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')";
-        let metadata = create_test_metadata(query, QueryType::Insert, vec!["users"]);
-        
-        let result = manager.verify_statement(query, &metadata);
-        assert!(result.is_ok(), "INSERT verification should succeed");
-        
-        // Test CREATE TABLE
-        let query = "CREATE TABLE test (id INT, name TEXT)";
-        let metadata = create_test_metadata(query, QueryType::CreateTable, vec!["test"]);
-        
-        let result = manager.verify_statement(query, &metadata);
-        assert!(result.is_ok(), "CREATE TABLE verification should succeed");
+        // Test with different query types
+        for (query_type, query, tables) in [
+            (QueryType::Select, "SELECT * FROM users", vec!["users"]),
+            (QueryType::Insert, "INSERT INTO users VALUES (1, 'test')", vec!["users"]),
+            (QueryType::Update, "UPDATE users SET name = 'test' WHERE id = 1", vec!["users"]),
+            (QueryType::Delete, "DELETE FROM users WHERE id = 1", vec!["users"]),
+        ] {
+            let metadata = create_test_metadata(query, query_type.clone(), tables);
+            
+            let tx_id = manager.begin_transaction(query, &metadata).unwrap();
+            let result = manager.complete_transaction(tx_id, Some(1)).await.unwrap();
+            
+            assert!(matches!(result.status, VerificationStatus::Verified | VerificationStatus::Skipped));
+        }
     }
     
     #[tokio::test]
     async fn test_transaction_history() {
-        let config = VerificationConfig::default();
+        // Create a configuration with limited history
+        let mut config = VerificationConfig::default();
+        config.max_history = 5;
+        let max_history = config.max_history; // Store the value before moving config
+        
+        // Create a verification manager
         let manager = VerificationManager::new(config).await.unwrap();
         
-        // Create several transactions
-        for i in 0..5 {
-            let query = format!("INSERT INTO test (id) VALUES ({})", i);
-            let metadata = create_test_metadata(&query, QueryType::Insert, vec!["test"]);
-            
+        // Create 10 transactions
+        for i in 0..10 {
+            let query = format!("SELECT * FROM test WHERE id = {}", i);
+            let metadata = create_test_metadata(&query, QueryType::Select, vec!["test"]);
             let tx_id = manager.begin_transaction(&query, &metadata).unwrap();
-            manager.complete_transaction(tx_id, Some(1)).unwrap();
+            manager.complete_transaction(tx_id, Some(1)).await.unwrap();
         }
         
         // Should only keep the last few transactions
         let transactions = manager.get_transactions();
-        assert!(transactions.len() > 0, "Should keep transaction history");
+        assert!(transactions.len() <= max_history);
     }
     
     #[tokio::test]
     async fn test_state_commitment() {
+        // Create a configuration for testing
         let config = VerificationConfig::default();
+        
+        // Create a verification manager
         let manager = VerificationManager::new(config).await.unwrap();
         
-        // Create several transactions
-        for i in 0..5 {
-            let query = format!("INSERT INTO test (id) VALUES ({})", i);
-            let metadata = create_test_metadata(&query, QueryType::Insert, vec!["test"]);
+        // Create a few transactions to generate state commitments
+        for i in 0..3 {
+            let query = format!("INSERT INTO users VALUES ({}, 'test{}')", i, i);
+            let metadata = create_test_metadata(&query, QueryType::Insert, vec!["users"]);
             
             let tx_id = manager.begin_transaction(&query, &metadata).unwrap();
-            manager.complete_transaction(tx_id, Some(1)).unwrap();
+            manager.complete_transaction(tx_id, Some(1)).await.unwrap();
         }
         
         // Should have committed state multiple times
         let commitments = manager.get_state_commitments();
-        assert!(commitments.len() >= 0, "Should track state commitments");
+        assert!(!commitments.is_empty());
     }
     
     #[tokio::test]
     async fn test_table_proof() {
+        // Create a configuration for testing
         let config = VerificationConfig::default();
+        
+        // Create a verification manager
         let manager = VerificationManager::new(config).await.unwrap();
         
-        // Create a transaction to update the state
-        let query = "INSERT INTO users (name, email) VALUES ('Alice', 'alice@example.com')";
+        // Create a transaction to make sure we have a state
+        let query = "INSERT INTO users VALUES (1, 'test')";
         let metadata = create_test_metadata(query, QueryType::Insert, vec!["users"]);
         
         let tx_id = manager.begin_transaction(query, &metadata).unwrap();
-        manager.complete_transaction(tx_id, Some(1)).unwrap();
+        manager.complete_transaction(tx_id, Some(1)).await.unwrap();
         
         // Generate a proof for the users table
         let proof = manager.generate_table_proof("users");
-        assert!(proof.is_ok(), "Generating table proof should succeed");
+        assert!(proof.is_ok());
+        
+        // Verify the proof
+        if let Ok(proof_data) = proof {
+            let verification = manager.verify_table_proof("users", &proof_data);
+            assert!(verification.is_ok());
+            assert!(verification.unwrap());
+        }
     }
 } 

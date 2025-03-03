@@ -41,12 +41,12 @@ where
 
 /// Retry a fallible operation with exponential backoff
 pub async fn retry_with_backoff<F, Fut, T, E>(
-    operation: F,
+    mut operation: F,
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<T, E>
 where
-    F: Fn() -> Fut,
+    F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, E>>,
 {
     let mut retries = 0;
@@ -62,7 +62,7 @@ where
                 
                 retries += 1;
                 tokio::time::sleep(backoff).await;
-                backoff *= 2; // Exponential backoff
+                backoff *= 2;
             }
         }
     }

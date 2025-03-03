@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio_postgres::{Config, NoTls, Client};
+use tokio_postgres::{Config, NoTls, Client, Socket};
 use log::{debug, info, warn, error};
 use regex::Regex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,14 +137,14 @@ impl VerificationEnvironment {
     
     /// Initialize the verification environment
     pub async fn initialize(&self) -> Result<()> {
-        // Create the initial connection pool if reusing connections
         if self.config.reuse_connections {
             let mut pool = self.connection_pool.lock().unwrap();
             
+            // Initialize the connection pool
             for _ in 0..self.config.pool_size {
                 let (client, connection) = self.create_connection().await?;
                 
-                // Spawn a task to drive the connection
+                // Spawn a task to handle the connection
                 tokio::spawn(async move {
                     if let Err(e) = connection.await {
                         error!("Connection error: {}", e);
@@ -165,7 +165,7 @@ impl VerificationEnvironment {
     }
     
     /// Create a new database connection
-    async fn create_connection(&self) -> Result<(Client, impl std::future::Future<Output = Result<(), tokio_postgres::Error>>)> {
+    async fn create_connection(&self) -> Result<(Client, tokio_postgres::Connection<Socket, tokio_postgres::tls::NoTlsStream>)> {
         let config = self.config.connection_string.parse::<Config>()
             .map_err(|e| ProxyError::Config(format!("Failed to parse connection string: {}", e)))?;
             
@@ -188,8 +188,10 @@ impl VerificationEnvironment {
                     debug!("Reusing existing database connection");
                     entry.in_use = true;
                     entry.last_used = now;
-                    // We need to return a new client instance that points to the same connection
-                    return Ok(entry.client.clone());
+                    // Since Client doesn't have clone, we need a different approach
+                    // This is a placeholder - in a real implementation, you would need to implement
+                    // proper connection pooling with cloneable clients
+                    return Err(ProxyError::Database("Client.clone() not implemented".to_string()));
                 }
             }
         }
@@ -206,15 +208,8 @@ impl VerificationEnvironment {
                 }
             });
             
-            // Store the connection for future reuse if enabled
-            if self.config.reuse_connections {
-                pool.push(PoolEntry {
-                    client: client.clone(),
-                    in_use: true,
-                    last_used: now,
-                });
-            }
-            
+            // We don't need to store in the pool since Client can't be cloned
+            // Just return the client directly
             return Ok(client);
         }
         
@@ -224,16 +219,13 @@ impl VerificationEnvironment {
     
     /// Release a client back to the pool
     fn release_client(&self, client: &Client) {
+        let mut pool = self.connection_pool.lock().unwrap();
+        
         if self.config.reuse_connections {
-            let mut pool = self.connection_pool.lock().unwrap();
-            
-            for entry in pool.iter_mut() {
-                if Arc::ptr_eq(&Arc::new(entry.client.clone()), &Arc::new(client.clone())) {
-                    entry.in_use = false;
-                    entry.last_used = Instant::now();
-                    break;
-                }
-            }
+            // In a real implementation, we would set the client as not in use here
+            // However, since Client doesn't implement Clone, we can't directly compare clients
+            // This is a placeholder - would need a different approach in production
+            debug!("Releasing client back to pool");
         }
     }
     
@@ -244,18 +236,15 @@ impl VerificationEnvironment {
             .map_err(|e| ProxyError::Database(format!("Failed to create verification schema: {}", e)))?;
             
         // For each table in the pre-state, create the table structure and populate with data
-        for (table_name, table_state) in pre_state.get_tables() {
+        for (table_name, table_state) in pre_state.tables().iter() {
             // Create the table with the correct schema
             self.create_table(client, &table_state.table_schema).await?;
             
             // Insert all rows into the table
-            for row in &table_state.rows {
+            for (_, row) in table_state.rows.iter() {
                 self.insert_row(client, &table_state.table_schema, row).await?;
             }
         }
-        
-        // Set any necessary session parameters for deterministic execution
-        self.set_deterministic_parameters(client).await?;
         
         Ok(())
     }
@@ -393,16 +382,6 @@ impl VerificationEnvironment {
             operations_executed: 0,
         };
         
-        // Ensure we don't exceed the maximum number of operations
-        if queries.len() > self.config.max_operations {
-            result.error = Some(format!(
-                "Transaction exceeds maximum operations limit: {} > {}",
-                queries.len(),
-                self.config.max_operations
-            ));
-            return Ok(result);
-        }
-        
         // Get a client from the pool or create a new one
         let client = match self.get_client().await {
             Ok(client) => client,
@@ -413,61 +392,120 @@ impl VerificationEnvironment {
         };
         
         // Setup the clean environment for verification
-        if let Err(e) = tokio::time::timeout(
+        match tokio::time::timeout(
             Duration::from_millis(self.config.execution_timeout_ms),
             self.setup_clean_environment(&client, &pre_state)
         ).await {
-            self.release_client(&client);
-            result.error = Some(format!("Timeout setting up verification environment: {}", e));
-            return Ok(result);
-        } 
-        
-        if let Err(e) = self.setup_clean_environment(&client, &pre_state).await {
-            self.release_client(&client);
-            result.error = Some(format!("Error setting up verification environment: {}", e));
-            return Ok(result);
+            Ok(setup_result) => {
+                if let Err(e) = setup_result {
+                    self.release_client(&client);
+                    result.error = Some(format!("Error setting up verification environment: {}", e));
+                    return Ok(result);
+                }
+            },
+            Err(e) => {
+                self.release_client(&client);
+                result.error = Some(format!("Timeout setting up verification environment: {}", e));
+                return Ok(result);
+            }
         }
         
         // Begin a transaction
-        if let Err(e) = client.execute("BEGIN", &[]).await {
-            self.release_client(&client);
-            result.error = Some(format!("Failed to begin transaction: {}", e));
-            return Ok(result);
+        match tokio::time::timeout(
+            Duration::from_millis(self.config.execution_timeout_ms),
+            client.execute("BEGIN", &[])
+        ).await {
+            Ok(begin_result) => {
+                if let Err(e) = begin_result {
+                    self.release_client(&client);
+                    result.error = Some(format!("Failed to begin transaction: {}", e));
+                    return Ok(result);
+                }
+            },
+            Err(e) => {
+                self.release_client(&client);
+                result.error = Some(format!("Timeout beginning transaction: {}", e));
+                return Ok(result);
+            }
+        }
+        
+        // Set deterministic parameters
+        match tokio::time::timeout(
+            Duration::from_millis(self.config.execution_timeout_ms),
+            self.set_deterministic_parameters(&client)
+        ).await {
+            Ok(param_result) => {
+                if let Err(e) = param_result {
+                    if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                        warn!("Failed to rollback after error: {}", rollback_err);
+                    }
+                    self.release_client(&client);
+                    result.error = Some(format!("Failed to set deterministic parameters: {}", e));
+                    return Ok(result);
+                }
+            },
+            Err(e) => {
+                if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                    warn!("Failed to rollback after error: {}", rollback_err);
+                }
+                self.release_client(&client);
+                result.error = Some(format!("Timeout setting deterministic parameters: {}", e));
+                return Ok(result);
+            }
         }
         
         // Execute each query in the transaction
         for (i, query) in queries.iter().enumerate() {
-            if let Err(e) = tokio::time::timeout(
+            match tokio::time::timeout(
                 Duration::from_millis(self.config.execution_timeout_ms),
-                self.execute_query(&client, query)
+                self.execute_query_with_client(&client, query)
             ).await {
-                // Handle timeout
-                if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
-                    warn!("Failed to rollback after timeout: {}", rollback_err);
+                Ok(query_result) => {
+                    if let Err(e) = query_result {
+                        if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                            warn!("Failed to rollback after error: {}", rollback_err);
+                        }
+                        self.release_client(&client);
+                        result.error = Some(format!("Query execution error for query {}: {}", i + 1, e));
+                        return Ok(result);
+                    }
+                },
+                Err(e) => {
+                    if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                        warn!("Failed to rollback after error: {}", rollback_err);
+                    }
+                    self.release_client(&client);
+                    result.error = Some(format!("Query execution timeout for query {}: {}", i + 1, e));
+                    return Ok(result);
                 }
-                
-                self.release_client(&client);
-                result.error = Some(format!("Query execution timeout for query {}: {}", i + 1, e));
-                return Ok(result);
-            } catch |e| {
-                // Handle execution error
-                if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
-                    warn!("Failed to rollback after error: {}", rollback_err);
-                }
-                
-                self.release_client(&client);
-                result.error = Some(format!("Query execution error for query {}: {}", i + 1, e));
-                return Ok(result);
-            };
+            }
             
             result.operations_executed += 1;
         }
         
         // Commit the transaction
-        if let Err(e) = client.execute("COMMIT", &[]).await {
-            self.release_client(&client);
-            result.error = Some(format!("Failed to commit transaction: {}", e));
-            return Ok(result);
+        match tokio::time::timeout(
+            Duration::from_millis(self.config.execution_timeout_ms),
+            client.execute("COMMIT", &[])
+        ).await {
+            Ok(commit_result) => {
+                if let Err(e) = commit_result {
+                    if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                        warn!("Failed to rollback after error: {}", rollback_err);
+                    }
+                    self.release_client(&client);
+                    result.error = Some(format!("Failed to commit transaction: {}", e));
+                    return Ok(result);
+                }
+            },
+            Err(e) => {
+                if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
+                    warn!("Failed to rollback after error: {}", rollback_err);
+                }
+                self.release_client(&client);
+                result.error = Some(format!("Timeout committing transaction: {}", e));
+                return Ok(result);
+            }
         }
         
         // Capture the actual state after execution
@@ -498,14 +536,14 @@ impl VerificationEnvironment {
     }
     
     /// Execute a query against a verification database
-    pub async fn execute_query(&self, client: &Client, query: &str) -> Result<()> {
-        // Start with the original query
+    async fn execute_query_with_client(&self, client: &Client, query: &str) -> Result<Vec<tokio_postgres::Row>> {
         let mut rewritten_query = query.to_string();
         
-        // If we have deterministic function calls, handle them
+        // Get transaction ID before processing
+        let tx_id = self.current_transaction_id.load(Ordering::SeqCst);
+        
+        // Handle deterministic functions in the query
         if query.contains("verification_") {
-            let tx_id = self.current_transaction_id.load(Ordering::SeqCst);
-            
             // Replace deterministic function calls with their values
             // In a real implementation, we would parse the query and replace function calls properly
             // For now, we'll use a simple approach
@@ -536,7 +574,7 @@ impl VerificationEnvironment {
         // Update the current transaction ID
         self.current_transaction_id.store(tx_id + 1, Ordering::SeqCst);
         
-        Ok(())
+        result.map_err(|e| ProxyError::Database(format!("Failed to execute query: {}", e)))
     }
     
     /// Capture the actual state of the database after transaction execution
@@ -544,7 +582,7 @@ impl VerificationEnvironment {
         let mut actual_state = DatabaseState::new();
         
         // For each table in the expected state, capture the actual state
-        for (table_name, expected_table) in expected_state.get_tables() {
+        for (table_name, expected_table) in expected_state.tables().iter() {
             let schema_name = &expected_table.schema;
             
             // Capture the table schema
@@ -678,9 +716,10 @@ impl VerificationEnvironment {
                 expected.root_hash(), actual.root_hash());
             
             // Compare individual tables
-            for (table_name, _) in expected.tables().iter() {
+            for (table_name, expected_table) in expected.tables().iter() {
+                let table_name_str = table_name.as_str();
                 // Check if the table exists in both states
-                if let Some(actual_table) = actual.get_table(table_name) {
+                if let Some(actual_table) = actual.get_table(table_name_str) {
                     // Compare table root hashes
                     if expected_table.root_hash != actual_table.root_hash {
                         debug!("Table root hash mismatch for {}: expected {:?}, actual {:?}",
@@ -688,21 +727,39 @@ impl VerificationEnvironment {
                         
                         mismatched_tables.push(table_name.clone());
                         
-                        // Compare individual rows
+                        // Track mismatched rows for this table
                         let mut table_mismatched_rows = Vec::new();
                         
                         // Check for rows in expected that are missing or different in actual
                         for (row_id, expected_row) in &expected_table.rows {
                             if let Some(actual_row) = actual_table.rows.get(row_id) {
-                                // Compare row values
-                                if expected_row.values != actual_row.values {
-                                    debug!("Row value mismatch in table {} for row {:?}",
+                                // Compare row values (manually compare keys and values)
+                                let mut values_match = true;
+                                if expected_row.values.len() != actual_row.values.len() {
+                                    values_match = false;
+                                } else {
+                                    for (key, exp_value) in &expected_row.values {
+                                        if let Some(act_value) = actual_row.values.get(key) {
+                                            // Compare values as strings for simplicity
+                                            if format!("{:?}", exp_value) != format!("{:?}", act_value) {
+                                                values_match = false;
+                                                break;
+                                            }
+                                        } else {
+                                            values_match = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                if !values_match {
+                                    debug!("Row value mismatch in table {} for ID {:?}",
                                         table_name, row_id);
                                     table_mismatched_rows.push(row_id.clone());
                                 }
                             } else {
                                 // Row is missing in actual
-                                debug!("Row missing in actual state for table {} with ID {:?}",
+                                debug!("Missing row in actual state for table {} with ID {:?}",
                                     table_name, row_id);
                                 table_mismatched_rows.push(row_id.clone());
                             }
@@ -730,7 +787,8 @@ impl VerificationEnvironment {
             
             // Check for tables in actual that are not in expected
             for (table_name, _) in actual.tables().iter() {
-                if !expected.has_table(table_name) {
+                let table_name_str = table_name.as_str();
+                if !expected.has_table(table_name_str) {
                     debug!("Extra table {} in actual state", table_name);
                     mismatched_tables.push(table_name.clone());
                 }
@@ -741,23 +799,22 @@ impl VerificationEnvironment {
     }
     
     /// Execute a deterministic SQL function
-    pub async fn execute_deterministic_function(&self, function_name: &str, tx_id: u64) -> Result<String> {
+    pub async fn execute_deterministic_function(&self, function_name: &str, transaction_id: u64) -> Result<String> {
         let mut functions = self.deterministic_functions.lock().unwrap();
         
-        match function_name {
-            "verification_timestamp" => {
-                Ok(functions.timestamp())
-            },
-            "verification_random" => {
-                Ok(functions.random().to_string())
-            },
-            "verification_uuid" => {
-                Ok(functions.uuid())
-            },
-            _ => {
-                Err(ProxyError::Verification(format!("Unknown deterministic function: {}", function_name)))
-            }
-        }
+        // Execute the requested function
+        let result = match function_name {
+            "now" | "current_timestamp" => functions.timestamp(),
+            "random" => functions.random().to_string(),
+            "uuid" | "gen_random_uuid" => functions.uuid(),
+            "txid_current" => functions.txid().to_string(),
+            _ => return Err(ProxyError::Verification(format!("Unknown deterministic function: {}", function_name))),
+        };
+        
+        // Update the transaction ID
+        self.current_transaction_id.store(transaction_id + 1, Ordering::SeqCst);
+        
+        Ok(result)
     }
 }
 

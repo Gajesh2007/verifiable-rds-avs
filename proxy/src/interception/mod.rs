@@ -86,7 +86,8 @@ impl InterceptionManager {
             executor,
             verifier: tokio::runtime::Runtime::new()
                 .expect("Failed to create runtime")
-                .block_on(verifier),
+                .block_on(verifier)
+                .expect("Failed to initialize verification manager"),
             config,
         }
     }
@@ -139,10 +140,9 @@ impl InterceptionManager {
             });
         }
         
-        // Perform verification checks
-        if self.config.capture_state && metadata.modifies_data() {
-            debug!("Capturing state for verification");
-            // Use a different method since capture_state doesn't exist
+        // Prepare for verification if enabled
+        if self.config.capture_state {
+            debug!("Preparing for verification");
             tokio::runtime::Runtime::new()
                 .expect("Failed to create runtime")
                 .block_on(self.verifier.prepare_verification(&metadata))?;
@@ -158,40 +158,36 @@ impl InterceptionManager {
     
     /// Process backend response for analysis and verification
     pub fn process_response(&mut self, message: &BackendMessage, metadata: Option<&QueryMetadata>) -> Result<()> {
-        // Skip if no metadata
-        let metadata = match metadata {
-            Some(meta) => meta,
-            None => return Ok(()),
-        };
-        
         match message {
             BackendMessage::DataRow(_) => {
-                // Track row results if needed
-                if self.config.track_dependencies {
-                    self.analyzer.track_result_row(metadata);
+                // If we have metadata, track the result row
+                if let Some(metadata) = metadata {
+                    if self.config.track_dependencies {
+                        self.analyzer.track_result_row(metadata);
+                    }
                 }
             }
-            BackendMessage::CommandComplete(cmd) => {
-                // Command complete tag is a string in this implementation
-                let tag = match cmd {
-                    BackendMessage::CommandComplete(tag_str) => tag_str,
-                    _ => unreachable!(),
-                };
+            BackendMessage::CommandComplete(tag_str) => {
+                // Command complete tag is already a string in this case
+                let tag = tag_str;
                 
-                debug!("Processing command completion: {}", tag);
+                // Extract affected rows
+                let rows_affected = self.extract_affected_rows(tag);
                 
-                // For DML operations, verify affected rows
-                if metadata.modifies_data() {
-                    if let Some(num_rows) = Self::extract_affected_rows(tag) {
-                        debug!("DML affected {} rows", num_rows);
-                    }
-                    
-                    // If verification is enabled, verify the state
-                    if self.config.enforce_verification {
-                        // Use a different method since verify_state doesn't exist
-                        tokio::runtime::Runtime::new()
-                            .expect("Failed to create runtime")
-                            .block_on(self.verifier.verify_transaction(metadata))?;
+                if let Some(metadata) = metadata {
+                    // If this completes a transaction, we need to verify it
+                    if let QueryType::Commit = metadata.query_type {
+                        debug!("Transaction completed, verifying...");
+                        
+                        // TODO: Get transaction ID from current transaction
+                        let tx_id = 0;
+                        
+                        let runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+                        runtime
+                            .block_on(async {
+                                // Complete the transaction
+                                self.verifier.complete_transaction(tx_id, rows_affected).await
+                            })?;
                     }
                 }
             }
@@ -200,7 +196,7 @@ impl InterceptionManager {
                 debug!("Query execution error: {:?}", err);
             }
             _ => {
-                // Ignore other message types
+                // Other message types not handled specifically
             }
         }
         
@@ -213,21 +209,25 @@ impl InterceptionManager {
         Ok(result.messages)
     }
     
-    /// Extract the number of affected rows from a command completion tag
-    fn extract_affected_rows(tag: &str) -> Option<u64> {
-        // Command tags have format: "INSERT 0 1" or "UPDATE 5"
+    /// Extract affected rows from a command complete tag
+    fn extract_affected_rows(&self, tag: &str) -> Option<u64> {
+        // Command complete tags are in the format: "TAG [OID] [ROWS]"
+        // For example: "INSERT 0 1" or "DELETE 5"
         let parts: Vec<&str> = tag.split_whitespace().collect();
+        
         if parts.len() >= 2 {
+            // For INSERT, the rows are in the third position
             if parts[0] == "INSERT" && parts.len() >= 3 {
-                // For INSERT, the count is the third word
-                parts[2].parse::<u64>().ok()
-            } else {
-                // For UPDATE, DELETE, etc. the count is the second word
-                parts[1].parse::<u64>().ok()
+                return parts[2].parse::<u64>().ok();
             }
-        } else {
-            None
+            
+            // For UPDATE, DELETE, SELECT, MOVE, FETCH, COPY, the rows are in the second position
+            if ["UPDATE", "DELETE", "SELECT", "MOVE", "FETCH", "COPY"].contains(&parts[0]) {
+                return parts[1].parse::<u64>().ok();
+            }
         }
+        
+        None
     }
 }
 

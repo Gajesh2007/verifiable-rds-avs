@@ -94,8 +94,8 @@ pub struct Row {
     pub modified_at: u64,
 }
 
-/// Column value
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Value types for database state 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     /// Null value
     Null,

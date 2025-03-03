@@ -177,8 +177,8 @@ mod tests {
     use super::*;
     
     fn test_hasher_implementation<H: SecureHasher>(hasher: H) {
-        let mut h1 = hasher.new_instance();
-        let mut h2 = hasher.new_instance();
+        let mut h1 = H::new_instance();
+        let mut h2 = H::new_instance();
         
         // Test basic hashing
         let data = b"test data";
@@ -191,8 +191,8 @@ mod tests {
         assert_eq!(hash1, hash2);
         
         // Test domain separation
-        let mut h3 = hasher.new_instance();
-        let mut h4 = hasher.new_instance();
+        let mut h3 = H::new_instance();
+        let mut h4 = H::new_instance();
         
         let hash3 = h3.hash_with_domain("DOMAIN1", data);
         let hash4 = h4.hash_with_domain("DOMAIN2", data);
@@ -201,8 +201,8 @@ mod tests {
         assert_ne!(hash3, hash4);
         
         // Test multiple inputs
-        let mut h5 = hasher.new_instance();
-        let mut h6 = hasher.new_instance();
+        let mut h5 = H::new_instance();
+        let mut h6 = H::new_instance();
         
         let data1 = b"data1";
         let data2 = b"data2";

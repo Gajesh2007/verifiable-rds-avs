@@ -135,7 +135,9 @@ mod tests {
         assert_ne!(hash, hash4);
         
         // Concatenation should not work
-        let concatenated = [data1, data2].concat();
+        let mut concatenated = Vec::new();
+        concatenated.extend_from_slice(data1);
+        concatenated.extend_from_slice(data2);
         let hash5 = secure_hash("TEST", &concatenated);
         assert_ne!(hash, hash5);
     }

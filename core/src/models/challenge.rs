@@ -531,7 +531,7 @@ mod tests {
         assert!(challenge.is_resolved());
         assert!(challenge.is_successful());
         assert!(challenge.resolution_time.is_some());
-        assert_eq!(challenge.resolution_result.unwrap(), "Operator slashed");
+        assert_eq!(challenge.resolution_result.clone().unwrap(), "Operator slashed");
         
         // Verify hash still valid after updates
         assert!(challenge.verify_hash());

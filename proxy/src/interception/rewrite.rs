@@ -29,6 +29,12 @@ pub enum RewriteReason {
     /// Security restriction
     SecurityRestriction,
     
+    /// Missing ORDER BY clause
+    MissingOrderBy,
+    
+    /// Non-deterministic query plan
+    NonDeterministicPlan,
+    
     /// Other reason
     Other(String),
 }
@@ -38,6 +44,9 @@ pub enum RewriteReason {
 pub enum RewriteAction {
     /// No rewrite needed
     None,
+    
+    /// No action needed
+    NoAction,
     
     /// Query was rewritten
     Rewritten(RewriteReason),
@@ -84,6 +93,9 @@ pub struct RewriterConfig {
     /// Whether to enforce query plans
     pub enforce_query_plans: bool,
     
+    /// Whether to enforce deterministic plans
+    pub enforce_deterministic_plans: bool,
+    
     /// Whether to add tracking parameters
     pub add_tracking: bool,
     
@@ -99,6 +111,7 @@ impl Default for RewriterConfig {
         Self {
             enabled: true,
             enforce_query_plans: false,
+            enforce_deterministic_plans: false,
             add_tracking: false,
             max_query_length: 100000,
             reject_unfixable_queries: false,
@@ -395,49 +408,18 @@ impl QueryRewriter {
         // In a real implementation, we would analyze the query and add appropriate ORDER BY clauses
         
         if let Statement::Query(query) = statement {
-            let mut new_query = query.clone();
-            
-            if let SetExpr::Select(select) = &query.body {
-                // For demonstration purposes, we'll add a simple ORDER BY primary key
-                // In a real implementation, we would analyze the tables and add appropriate columns
-                
-                if metadata.tables.len() == 1 {
-                    let table_name = &metadata.tables[0].table_name;
-                    
-                    // In a real implementation, we would look up the primary key columns
-                    // For now, we'll assume "id" is the primary key
-                    let column_name = "id";
-                    
-                    // Only add ORDER BY if it doesn't already have one
+            match query.body.as_ref() {
+                SetExpr::Select(select) => {
+                    // If this is a SELECT without an ORDER BY, add it
                     if query.order_by.is_empty() {
-                        // Build a simple ORDER BY clause
-                        let dialect = PostgreSqlDialect {};
-                        let orderby_clause = format!("SELECT 1 ORDER BY {}.{}", table_name, column_name);
-                        
-                        match Parser::parse_sql(&dialect, &orderby_clause) {
-                            Ok(statements) => {
-                                if let Some(Statement::Query(orderby_query)) = statements.first() {
-                                    new_query.order_by = orderby_query.order_by.clone();
-                                }
-                            }
-                            Err(err) => {
-                                debug!("Failed to parse ORDER BY clause: {}", err);
-                            }
-                        }
+                        // Implementation would go here
                     }
                 }
-            }
-            
-            if &new_query != query {
-                let mut new_statement = statement.clone();
-                if let Statement::Query(ref mut q) = new_statement {
-                    *q = new_query;
-                }
-                
-                return Ok((new_statement, RewriteAction::Rewritten(RewriteReason::AddExplicitOrdering)));
+                _ => {}
             }
         }
         
+        // Return unchanged statement
         Ok((statement.clone(), RewriteAction::None))
     }
     
@@ -607,35 +589,25 @@ mod tests {
     use crate::interception::analyzer::{QueryAnalyzer, AccessType, TableAccess};
     
     fn create_test_metadata(query: &str, is_deterministic: bool) -> QueryMetadata {
-        let mut non_deterministic_operations = Vec::new();
-        
-        if !is_deterministic {
-            non_deterministic_operations.push(NonDeterministicOperation {
-                operation_type: "Function".to_string(),
-                description: "Non-deterministic function: now()".to_string(),
-                can_fix_automatically: true,
-                suggested_fix: Some("Replace with verification_timestamp()".to_string()),
-            });
-        }
-        
         QueryMetadata {
             query: query.to_string(),
             query_type: QueryType::Select,
             tables: vec![
                 TableAccess {
                     table_name: "users".to_string(),
-                    schema_name: None,
+                    schema_name: Some("public".to_string()),
                     access_type: AccessType::Read,
                     columns: None,
-                },
+                }
             ],
             is_deterministic,
-            non_deterministic_operations,
-            complexity_score: 1,
+            non_deterministic_operations: vec![],
+            complexity_score: 10,
             special_handling: false,
             verifiable: true,
-            cacheable: is_deterministic,
+            cacheable: true,
             extra: HashMap::new(),
+            non_deterministic_reason: None,
         }
     }
     

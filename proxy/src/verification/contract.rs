@@ -344,7 +344,7 @@ impl ContractManager {
             
             // Call the contract commitState function
             let call = contract.commit_state(
-                state_root.into(),
+                *state_root,
                 block_number.into(),
                 previous_state_root.into(),
                 transaction_hash.into(),
@@ -456,7 +456,8 @@ impl ContractManager {
             );
             
             // Send the transaction with the bond amount
-            let pending_tx = call.value(bond_amount).send().await
+            let call_with_value = call.value(bond_amount);
+            let pending_tx = call_with_value.send().await
                 .map_err(|e| ProxyError::Verification(format!("Failed to send transaction: {}", e)))?;
             
             // Get the transaction hash

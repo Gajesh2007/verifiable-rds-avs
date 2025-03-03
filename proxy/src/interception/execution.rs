@@ -440,7 +440,7 @@ impl QueryExecutor {
         
         // Get the variable value from session vars
         let var_value = if let Ok(vars) = self.session_vars.lock() {
-            vars.get(&*var_name).cloned().unwrap_or_else(|| "".to_string())
+            vars.get(&var_name.to_string()).cloned().unwrap_or_else(|| "".to_string())
         } else {
             "".to_string()
         };
@@ -557,22 +557,15 @@ mod tests {
         QueryMetadata {
             query: query.to_string(),
             query_type,
-            tables: vec![
-                TableAccess {
-                    table_name: "users".to_string(),
-                    schema_name: None,
-                    access_type: AccessType::Read,
-                    columns: None,
-                },
-            ],
+            tables: vec![],
             is_deterministic: true,
-            non_deterministic_operations: Vec::new(),
-            non_deterministic_reason: None,
+            non_deterministic_operations: vec![],
             complexity_score: 1,
             special_handling: false,
             verifiable: true,
             cacheable: true,
             extra: HashMap::new(),
+            non_deterministic_reason: None,
         }
     }
     

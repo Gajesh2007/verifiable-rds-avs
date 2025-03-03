@@ -277,7 +277,7 @@ mod tests {
         assert!(matches!(stmt.ddl, DdlOperation::CreateTable(_)));
         assert_eq!(stmt.sql, sql);
         
-        if let DdlOperation::CreateTable(table_def) = stmt.ddl {
+        if let DdlOperation::CreateTable(ref table_def) = stmt.ddl {
             assert_eq!(table_def.name, "users");
             assert_eq!(table_def.columns.len(), 3);
             assert_eq!(table_def.primary_keys, vec!["id".to_string()]);

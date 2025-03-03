@@ -53,6 +53,9 @@ hmac = "0.12.1"
 base64 = "0.21.7"
 md5 = "0.7.0"
 
+# Ethereum interaction
+ethers = { version = "2.0.11", features = ["abigen", "ws", "rustls"] }
+
 # EigenLayer SDK
 eigensdk = { version = "0.3.0", features = ["full"] }
 

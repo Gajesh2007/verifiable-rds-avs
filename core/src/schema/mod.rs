@@ -218,7 +218,7 @@ impl SchemaVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::table::{ColumnDefinition, ColumnType};
+    use crate::models::{ColumnDefinition, ColumnType};
     
     // Helper to create a test table schema
     fn create_test_table() -> TableSchema {
