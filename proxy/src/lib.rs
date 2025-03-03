@@ -1,54 +1,33 @@
-//! PostgreSQL wire protocol proxy for the Verifiable RDS AVS
+//! Verifiable PostgreSQL Proxy
 //!
-//! This crate implements a PostgreSQL-compatible wire protocol handler
-//! that intercepts and analyzes database operations for verification.
+//! This crate provides a proxy for PostgreSQL that intercepts queries and verifies them on a blockchain.
 
-/// Error types for the proxy
+// Error types and result
 pub mod error;
+pub use error::{ProxyError, Result};
 
-/// Configuration for the proxy
+// Configuration
 pub mod config;
+pub use config::ProxyConfig;
 
-/// PostgreSQL wire protocol implementation
+// Protocol-related modules
 pub mod protocol;
+pub use protocol::{FrontendMessage, BackendMessage, AuthenticationRequest, AuthMethod, ClientConnection};
 
-/// Query interception and analysis
+// Query interception and analysis
 pub mod interception;
+pub use interception::{QueryMetadata, QueryType};
 
-/// Security features like rate limiting and DoS protection
+// Security features
 pub mod security;
+pub use security::{RateLimiter, RateLimiterConfig};
 
-/// Server implementation
+// Server implementation
 pub mod server;
+pub use server::ProxyServer;
 
-/// Verification module
+// Verification engine
 pub mod verification;
 
-/// Transaction module
-pub mod transaction;
-
-// Re-export important types
-pub use config::ProxyConfig;
-pub use server::ProxyServer;
-pub use error::{ProxyError, Result};
-pub use security::rate_limiter::{RateLimiter, RateLimiterConfig};
-
-// Re-export commonly used types
-pub use protocol::{
-    message::{FrontendMessage, BackendMessage, AuthenticationRequest},
-    parser::MessageParser,
-    formatter::MessageFormatter,
-    connection::{ClientConnection, ConnectionState, ConnectionStats},
-    auth::{AuthHandler, AuthState, AuthMethod, AuthConfig},
-    transaction::{TransactionTracker, TransactionState, IsolationLevel, AccessMode},
-    validator::{ProtocolValidator, ProtocolValidatorConfig},
-};
-pub use interception::{
-    QueryAnalyzer, QueryMetadata, QueryType,
-    QueryExecutor, ExecutionPlan, ExecutionResult,
-    QueryRewriter, RewriteAction, RewriteReason,
-    VerificationManager, VerificationResult, VerificationStatus,
-};
-pub use verification::{
-    MerkleTree, SparseMerkleTree, MerkleProof, Verifiable,
-}; 
+// Transaction processing
+pub mod transaction; 

@@ -29,6 +29,18 @@ pub enum ProxyError {
     #[error("Integer parsing error: {0}")]
     ParseInt(#[from] ParseIntError),
     
+    /// Incomplete message
+    #[error("Incomplete message received")]
+    Incomplete,
+    
+    /// Connection closed
+    #[error("Connection closed by client")]
+    ConnectionClosed,
+    
+    /// Connection timeout
+    #[error("Connection timed out")]
+    ConnectionTimeout,
+    
     /// PostgreSQL protocol error
     #[error("PostgreSQL protocol error: {0}")]
     Protocol(String),
@@ -80,6 +92,10 @@ pub enum ProxyError {
     /// Not implemented
     #[error("Not implemented: {0}")]
     NotImplemented(String),
+    
+    /// Unknown error
+    #[error("Unknown error: {0}")]
+    Unknown(String),
     
     /// Other error
     #[error("{0}")]

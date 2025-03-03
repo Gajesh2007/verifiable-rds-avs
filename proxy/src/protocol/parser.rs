@@ -10,6 +10,7 @@ use std::convert::TryInto;
 use std::io::Cursor;
 
 /// Message parser for PostgreSQL wire protocol
+#[derive(Clone)]
 pub struct MessageParser;
 
 impl MessageParser {

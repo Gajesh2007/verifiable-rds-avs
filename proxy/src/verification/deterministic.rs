@@ -13,6 +13,7 @@ use uuid::Uuid;
 ///
 /// Unlike PostgreSQL's NOW() or CURRENT_TIMESTAMP, this returns a
 /// deterministic timestamp based on the block time or logical time.
+#[derive(Debug)]
 pub struct DeterministicTimestamp {
     /// Block timestamp (seconds since epoch)
     block_timestamp: u64,
@@ -73,6 +74,7 @@ impl DeterministicTimestamp {
 ///
 /// Unlike PostgreSQL's RANDOM(), this returns a deterministic
 /// random number based on the transaction ID and seed.
+#[derive(Debug)]
 pub struct DeterministicRandom {
     /// Current seed value
     seed: u64,
@@ -165,6 +167,7 @@ fn seconds_to_date_time(secs: u64) -> (u32, u32, u32, u32, u32, u32) {
 }
 
 /// Deterministic SQL functions for use by the rewriter
+#[derive(Debug)]
 pub struct DeterministicSqlFunctions {
     /// Timestamp generator
     timestamp: DeterministicTimestamp,

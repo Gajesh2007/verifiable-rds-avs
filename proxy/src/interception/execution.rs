@@ -6,11 +6,12 @@
 
 use crate::error::{ProxyError, Result};
 use crate::interception::analyzer::{QueryMetadata, QueryType};
-use crate::protocol::message::{BackendMessage, DataRow, CommandComplete, RowDescription, FieldDescription};
+use crate::protocol::message::BackendMessage;
+use crate::protocol::message::FieldDescription;
 use log::{debug, warn, info};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use bytes::Bytes;
+use bytes::{Bytes, Buf};
 
 /// Type of execution plan
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +86,17 @@ pub struct QueryExecutor {
     session_vars: Arc<Mutex<HashMap<String, String>>>,
 }
 
+impl std::fmt::Debug for QueryExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QueryExecutor")
+            .field("config", &self.config)
+            // Skip handlers field as it contains non-Debug function pointers
+            .field("system_metadata", &self.system_metadata)
+            .field("session_vars", &self.session_vars)
+            .finish()
+    }
+}
+
 /// Configuration for the query executor
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -143,7 +155,7 @@ impl QueryExecutor {
                 FieldDescription {
                     name: "version".to_string(),
                     table_oid: 0,
-                    column_oid: 0,
+                    column_id: 0,
                     data_type_oid: 25, // TEXT
                     data_type_size: -1,
                     type_modifier: -1,
@@ -154,7 +166,7 @@ impl QueryExecutor {
             messages.push(BackendMessage::RowDescription(fields));
             
             // Data row
-            let values = vec![Some("1.0.0".as_bytes().to_vec())];
+            let values = vec![Some(Bytes::from("1.0.0".as_bytes().to_vec()))];
             messages.push(BackendMessage::DataRow(values));
             
             // Command complete
@@ -199,7 +211,7 @@ impl QueryExecutor {
         // Handler for SHOW commands
         if self.config.handle_show_internally {
             self.register_handler("SHOW ", Box::new(move |query, metadata| {
-                let session_vars = Arc::new(Mutex::new(HashMap::new()));
+                let session_vars: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
                 
                 // Parse the SHOW command
                 // Format: SHOW name
@@ -212,7 +224,7 @@ impl QueryExecutor {
                 
                 // Get the variable value from session vars
                 let var_value = if let Ok(vars) = session_vars.lock() {
-                    vars.get(var_name).cloned().unwrap_or_else(|| "".to_string())
+                    vars.get(&var_name.to_string()).cloned().unwrap_or_else(|| "".to_string())
                 } else {
                     "".to_string()
                 };
@@ -224,7 +236,7 @@ impl QueryExecutor {
                     FieldDescription {
                         name: var_name.to_string(),
                         table_oid: 0,
-                        column_oid: 0,
+                        column_id: 0,
                         data_type_oid: 25, // TEXT
                         data_type_size: -1,
                         type_modifier: -1,
@@ -235,7 +247,7 @@ impl QueryExecutor {
                 messages.push(BackendMessage::RowDescription(fields));
                 
                 // Data row
-                let values = vec![Some(var_value.as_bytes().to_vec())];
+                let values = vec![Some(Bytes::from(var_value.as_bytes().to_vec()))];
                 messages.push(BackendMessage::DataRow(values));
                 
                 // Command complete
@@ -254,7 +266,7 @@ impl QueryExecutor {
                 FieldDescription {
                     name: "state_root".to_string(),
                     table_oid: 0,
-                    column_oid: 0,
+                    column_id: 0,
                     data_type_oid: 25, // TEXT
                     data_type_size: -1,
                     type_modifier: -1,
@@ -266,7 +278,7 @@ impl QueryExecutor {
             
             // Data row - this would be the actual state root in a real implementation
             let state_root = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
-            let values = vec![Some(state_root.as_bytes().to_vec())];
+            let values = vec![Some(Bytes::from(state_root.as_bytes().to_vec()))];
             messages.push(BackendMessage::DataRow(values));
             
             // Command complete
@@ -428,7 +440,7 @@ impl QueryExecutor {
         
         // Get the variable value from session vars
         let var_value = if let Ok(vars) = self.session_vars.lock() {
-            vars.get(var_name).cloned().unwrap_or_else(|| "".to_string())
+            vars.get(&*var_name).cloned().unwrap_or_else(|| "".to_string())
         } else {
             "".to_string()
         };
@@ -440,7 +452,7 @@ impl QueryExecutor {
             FieldDescription {
                 name: var_name.to_string(),
                 table_oid: 0,
-                column_oid: 0,
+                column_id: 0,
                 data_type_oid: 25, // TEXT
                 data_type_size: -1,
                 type_modifier: -1,
@@ -451,7 +463,7 @@ impl QueryExecutor {
         messages.push(BackendMessage::RowDescription(fields));
         
         // Data row
-        let values = vec![Some(var_value.as_bytes().to_vec())];
+        let values = vec![Some(Bytes::from(var_value.as_bytes().to_vec()))];
         messages.push(BackendMessage::DataRow(values));
         
         // Command complete
@@ -555,6 +567,7 @@ mod tests {
             ],
             is_deterministic: true,
             non_deterministic_operations: Vec::new(),
+            non_deterministic_reason: None,
             complexity_score: 1,
             special_handling: false,
             verifiable: true,
@@ -666,7 +679,7 @@ mod tests {
                 FieldDescription {
                     name: "result".to_string(),
                     table_oid: 0,
-                    column_oid: 0,
+                    column_id: 0,
                     data_type_oid: 25, // TEXT
                     data_type_size: -1,
                     type_modifier: -1,
@@ -677,7 +690,7 @@ mod tests {
             messages.push(BackendMessage::RowDescription(fields));
             
             // Data row
-            let values = vec![Some("custom result".as_bytes().to_vec())];
+            let values = vec![Some(Bytes::from("custom result".as_bytes().to_vec()))];
             messages.push(BackendMessage::DataRow(values));
             
             // Command complete

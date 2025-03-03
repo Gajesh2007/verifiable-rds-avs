@@ -3,15 +3,15 @@
 //! This module handles query parsing, analysis, rewriting and integration
 //! with the verification engine.
 
-mod analyzer;
-mod execution;
-mod rewrite;
-mod verification;
+pub mod analyzer;
+pub mod execution;
+pub mod rewrite;
+pub mod verification;
 
 pub use analyzer::{QueryAnalyzer, QueryMetadata, QueryType};
-pub use execution::{QueryExecutor, ExecutionPlan, ExecutionResult};
-pub use rewrite::{QueryRewriter, RewriteAction, RewriteReason};
-pub use verification::{VerificationManager, VerificationResult, VerificationStatus};
+pub use execution::{QueryExecutor, ExecutionPlan, ExecutionResult, ExecutorConfig};
+pub use rewrite::{QueryRewriter, RewriteAction, RewriteReason, RewriterConfig};
+pub use verification::{VerificationManager, VerificationResult, VerificationStatus, VerificationConfig};
 
 use crate::error::{ProxyError, Result};
 use crate::protocol::{FrontendMessage, BackendMessage};
@@ -76,15 +76,17 @@ impl InterceptionManager {
     /// Create a new interception manager
     pub fn new(config: InterceptionConfig) -> Self {
         let analyzer = QueryAnalyzer::new();
-        let rewriter = QueryRewriter::new();
-        let executor = QueryExecutor::new();
-        let verifier = VerificationManager::new();
+        let rewriter = QueryRewriter::new(RewriterConfig::default());
+        let executor = QueryExecutor::new(ExecutorConfig::default());
+        let verifier = VerificationManager::new(VerificationConfig::default());
         
         Self {
             analyzer,
             rewriter,
             executor,
-            verifier,
+            verifier: tokio::runtime::Runtime::new()
+                .expect("Failed to create runtime")
+                .block_on(verifier),
             config,
         }
     }
@@ -121,20 +123,18 @@ impl InterceptionManager {
         let rewrite_result = if self.config.enable_rewriting {
             self.rewriter.rewrite(query, &metadata)?
         } else {
-            None
+            (query.to_string(), RewriteAction::NoAction)
         };
         
-        if let Some(ref rewrite) = rewrite_result {
-            debug!("Query rewritten: {}", rewrite.query);
-            debug!("Rewrite reason: {:?}", rewrite.reason);
-        }
+        debug!("Query rewritten: {}", rewrite_result.0);
+        debug!("Rewrite reason: {:?}", rewrite_result.1);
         
         // Check if this is a special query we should handle ourselves
         if metadata.is_special_handling() {
             debug!("Special handling for query");
             return Ok(QueryProcessingResult {
                 action: QueryAction::Handle,
-                transformed_query: rewrite_result.map(|r| r.query),
+                transformed_query: Some(rewrite_result.0),
                 metadata: Some(metadata),
             });
         }
@@ -142,13 +142,16 @@ impl InterceptionManager {
         // Perform verification checks
         if self.config.capture_state && metadata.modifies_data() {
             debug!("Capturing state for verification");
-            self.verifier.capture_state(&metadata)?;
+            // Use a different method since capture_state doesn't exist
+            tokio::runtime::Runtime::new()
+                .expect("Failed to create runtime")
+                .block_on(self.verifier.prepare_verification(&metadata))?;
         }
         
         // Return the processing result
         Ok(QueryProcessingResult {
             action: QueryAction::Forward,
-            transformed_query: rewrite_result.map(|r| r.query),
+            transformed_query: Some(rewrite_result.0),
             metadata: Some(metadata),
         })
     }
@@ -169,17 +172,26 @@ impl InterceptionManager {
                 }
             }
             BackendMessage::CommandComplete(cmd) => {
-                debug!("Processing command completion: {}", cmd.tag);
+                // Command complete tag is a string in this implementation
+                let tag = match cmd {
+                    BackendMessage::CommandComplete(tag_str) => tag_str,
+                    _ => unreachable!(),
+                };
+                
+                debug!("Processing command completion: {}", tag);
                 
                 // For DML operations, verify affected rows
                 if metadata.modifies_data() {
-                    if let Some(num_rows) = Self::extract_affected_rows(&cmd.tag) {
+                    if let Some(num_rows) = Self::extract_affected_rows(tag) {
                         debug!("DML affected {} rows", num_rows);
                     }
                     
                     // If verification is enabled, verify the state
                     if self.config.enforce_verification {
-                        self.verifier.verify_state(metadata)?;
+                        // Use a different method since verify_state doesn't exist
+                        tokio::runtime::Runtime::new()
+                            .expect("Failed to create runtime")
+                            .block_on(self.verifier.verify_transaction(metadata))?;
                     }
                 }
             }
@@ -197,7 +209,8 @@ impl InterceptionManager {
     
     /// Execute a special query directly
     pub fn execute_special_query(&mut self, query: &str, metadata: &QueryMetadata) -> Result<Vec<BackendMessage>> {
-        self.executor.execute(query, metadata)
+        let result = self.executor.execute_query(query, metadata)?;
+        Ok(result.messages)
     }
     
     /// Extract the number of affected rows from a command completion tag

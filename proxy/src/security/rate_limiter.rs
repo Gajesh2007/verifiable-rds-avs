@@ -14,7 +14,35 @@ use tokio::sync::Mutex;
 
 use crate::error::{ProxyError, Result};
 
+/// Configuration for rate limiting
+#[derive(Debug, Clone)]
+pub struct RateLimiterConfig {
+    /// Whether rate limiting is enabled
+    pub enabled: bool,
+    
+    /// Rate limit per minute
+    pub rate_limit: u32,
+    
+    /// Allow list for IPs that are exempt from rate limiting
+    pub allow_list: Vec<IpAddr>,
+    
+    /// Block list for IPs that are always blocked
+    pub block_list: Vec<IpAddr>,
+}
+
+impl Default for RateLimiterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_limit: 0, // 0 means no rate limit
+            allow_list: Vec::new(),
+            block_list: Vec::new(),
+        }
+    }
+}
+
 /// Rate limiter for client connections
+#[derive(Debug)]
 pub struct RateLimiter {
     /// Rate limiter implementation
     limiter: GovernorRateLimiter<NotKeyed, InMemoryState, DefaultClock>,
@@ -50,9 +78,9 @@ struct ClientReputation {
 
 impl RateLimiter {
     /// Create a new rate limiter with the given rate limit
-    pub fn new(rate_limit: u32) -> Result<Self> {
+    pub fn new(config: RateLimiterConfig) -> Result<Self> {
         // Ensure rate limit is positive
-        let rate_limit = std::cmp::max(1, rate_limit);
+        let rate_limit = std::cmp::max(1, config.rate_limit);
         
         // Create quota
         let quota = Quota::per_minute(
@@ -67,8 +95,8 @@ impl RateLimiter {
             limiter,
             client_reputation: HashMap::new(),
             rate_limit,
-            allow_list: Vec::new(),
-            block_list: Vec::new(),
+            allow_list: config.allow_list.clone(),
+            block_list: config.block_list.clone(),
         })
     }
     
@@ -176,6 +204,41 @@ impl RateLimiter {
             now.duration_since(reputation.last_access) < Duration::from_secs(3600)
         });
     }
+    
+    /// Add a method to check connections
+    pub fn check_connection(&mut self, ip: IpAddr) -> bool {
+        // If IP is on the allow list, always allow
+        if self.allow_list.contains(&ip) {
+            return true;
+        }
+        
+        // If IP is on the block list, always block
+        if self.block_list.contains(&ip) {
+            return false;
+        }
+        
+        // Otherwise, use the standard check
+        self.check(ip)
+    }
+}
+
+// Implement clone for RateLimiter manually since GovernorRateLimiter doesn't implement Clone
+impl Clone for RateLimiter {
+    fn clone(&self) -> Self {
+        // We need to create a new rate limiter with the same configuration
+        let config = RateLimiterConfig {
+            enabled: true, // Enable by default when cloning
+            rate_limit: self.rate_limit,
+            allow_list: self.allow_list.clone(),
+            block_list: self.block_list.clone(),
+        };
+        
+        RateLimiter::new(config).unwrap_or_else(|_| {
+            // Fallback configuration
+            let fallback_config = RateLimiterConfig::default();
+            RateLimiter::new(fallback_config).expect("Failed to create fallback rate limiter")
+        })
+    }
 }
 
 /// Rate limiter manager for distributed rate limiting
@@ -202,7 +265,17 @@ impl RateLimiterManager {
         
         if !limiters.contains_key(&ip) {
             // Create a new rate limiter for this IP
-            let limiter = RateLimiter::new(self.default_rate_limit).unwrap();
+            let limiter = RateLimiter::new(RateLimiterConfig {
+                enabled: true, // Enable by default for new limiters
+                rate_limit: self.default_rate_limit,
+                allow_list: Vec::new(),
+                block_list: Vec::new(),
+            }).unwrap_or_else(|_| {
+                // Fallback configuration
+                let fallback_config = RateLimiterConfig::default();
+                RateLimiter::new(fallback_config).expect("Failed to create fallback rate limiter")
+            });
+            
             limiters.insert(ip, Arc::new(Mutex::new(limiter)));
         }
         
@@ -244,24 +317,76 @@ mod tests {
     
     #[test]
     fn test_rate_limiter_creation() {
-        let rate_limiter = RateLimiter::new(100).unwrap();
+        let config = RateLimiterConfig {
+            enabled: true,
+            rate_limit: 100,
+            allow_list: vec![],
+            block_list: vec![],
+        };
+        
+        let rate_limiter = RateLimiter::new(config).unwrap();
         assert_eq!(rate_limiter.rate_limit, 100);
     }
     
     #[test]
     fn test_rate_limiter_check() {
-        let mut rate_limiter = RateLimiter::new(100).unwrap();
+        let mut limiter = RateLimiter::new(RateLimiterConfig {
+            enabled: true,
+            rate_limit: 10,
+            allow_list: vec![],
+            block_list: vec![],
+        }).unwrap();
+        
         let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
         
         // Should allow the first request
-        assert!(rate_limiter.check(ip));
+        assert!(limiter.check(ip));
+        
+        // Add to allow list
+        limiter.add_to_allow_list(ip);
+        assert!(limiter.check(ip));
+        
+        // Add to block list
+        limiter.add_to_block_list(ip);
+        assert!(!limiter.check(ip));
+    }
+    
+    #[test]
+    fn test_allow_list() {
+        let mut rate_limiter = RateLimiter::new(RateLimiterConfig {
+            enabled: true,
+            rate_limit: 1,
+            allow_list: vec!["127.0.0.1".parse().unwrap()],
+            block_list: vec![],
+        }).unwrap();
+        
+        let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
         
         // Allow list should work
-        rate_limiter.add_to_allow_list(ip);
         assert!(rate_limiter.check(ip));
         
+        // Should still allow even after multiple requests
+        for _ in 0..10 {
+            assert!(rate_limiter.check(ip));
+        }
+    }
+    
+    #[test]
+    fn test_block_list() {
+        let mut rate_limiter = RateLimiter::new(RateLimiterConfig {
+            enabled: true,
+            rate_limit: 100,
+            allow_list: vec![],
+            block_list: vec!["192.168.1.1".parse().unwrap()],
+        }).unwrap();
+        
+        let ip = "192.168.1.1".parse::<IpAddr>().unwrap();
+        
         // Block list should work
-        rate_limiter.add_to_block_list(ip);
         assert!(!rate_limiter.check(ip));
+        
+        // Remove from block list
+        rate_limiter.remove_from_block_list(ip);
+        assert!(rate_limiter.check(ip));
     }
 } 

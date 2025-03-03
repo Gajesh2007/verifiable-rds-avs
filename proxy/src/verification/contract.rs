@@ -150,7 +150,8 @@ pub struct Challenge {
     pub result: Option<String>,
 }
 
-/// Contract integration manager
+/// Contract manager for interacting with the EigenLayer verification system
+#[derive(Debug)]
 pub struct ContractManager {
     /// Configuration for contract integration
     config: ContractConfig,

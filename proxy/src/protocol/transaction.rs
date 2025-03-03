@@ -4,12 +4,12 @@
 //! clean transaction boundaries for security.
 
 use crate::error::{ProxyError, Result};
-use crate::protocol::message::{FrontendMessage, BackendMessage, CommandComplete};
+use crate::protocol::message::{FrontendMessage, BackendMessage};
 use std::collections::{HashMap, HashSet};
 use log::{debug, error, info, warn};
 
-/// Transaction isolation levels in PostgreSQL
-#[derive(Debug, PartialEq, Clone, Copy)]
+/// Transaction isolation level
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IsolationLevel {
     /// Read committed isolation level
     ReadCommitted,
@@ -59,6 +59,12 @@ pub enum TransactionState {
     
     /// In an implicit transaction (for example, from a simple query)
     Implicit,
+}
+
+impl Default for TransactionState {
+    fn default() -> Self {
+        TransactionState::Idle
+    }
 }
 
 /// Transaction information
@@ -207,32 +213,32 @@ impl TransactionTracker {
     }
     
     /// Update transaction state based on command completion
-    pub fn update_from_command_complete(&mut self, complete: &CommandComplete) -> Result<()> {
-        match complete.tag.as_str() {
-            "BEGIN" | "START TRANSACTION" => {
-                // This confirms a successful transaction start
-                self.transaction.state = TransactionState::InTransaction;
-            }
-            "COMMIT" => {
-                // Reset state after successful commit
-                self.reset();
-            }
-            "ROLLBACK" => {
-                // Reset state after successful rollback
-                self.reset();
-            }
-            // For any other command completion within an implicit transaction
-            _ if self.transaction.state == TransactionState::Implicit => {
-                // Auto-commit implicit transaction after each statement
-                debug!("Auto-committing implicit transaction");
-                self.reset();
-            }
-            _ => {
-                // Other command completions don't affect transaction state
-            }
+    pub fn update_from_command_complete(&mut self, complete: &String) -> Result<()> {
+        // Extract command tag which is the first word
+        let tag_parts: Vec<&str> = complete.split_whitespace().collect();
+        if tag_parts.is_empty() {
+            return Ok(());
         }
         
-        Ok(())
+        match tag_parts[0] {
+            "BEGIN" => {
+                // If we see a BEGIN complete, we're in a transaction
+                self.transaction.state = TransactionState::InTransaction;
+                self.transaction.query_count = 0;
+                Ok(())
+            },
+            "COMMIT" => {
+                // End transaction on commit
+                self.reset();
+                Ok(())
+            },
+            "ROLLBACK" => {
+                // End transaction on rollback
+                self.reset();
+                Ok(())
+            },
+            _ => Ok(())
+        }
     }
     
     /// Update transaction state based on an error response
@@ -508,18 +514,18 @@ impl TransactionTracker {
             .to_string();
         
         debug!("Setting session variable: {} = {}", var_name, clean_value);
-        self.session_vars.insert(var_name, clean_value);
+        self.session_vars.insert(var_name.clone(), clean_value);
         
         // Handle special transaction-related variables
         if var_name == "transaction_isolation" {
-            match self.session_vars.get("transaction_isolation").map(|s| s.as_str()) {
-                Some("read committed") => {
+            match self.session_vars.get("transaction_isolation") {
+                Some(value) if value == "read committed" => {
                     self.transaction.isolation_level = IsolationLevel::ReadCommitted;
                 }
-                Some("repeatable read") => {
+                Some(value) if value == "repeatable read" => {
                     self.transaction.isolation_level = IsolationLevel::RepeatableRead;
                 }
-                Some("serializable") => {
+                Some(value) if value == "serializable" => {
                     self.transaction.isolation_level = IsolationLevel::Serializable;
                 }
                 _ => {} // Ignore other values
@@ -563,9 +569,7 @@ mod tests {
         assert!(tracker.in_transaction());
         
         // Simulate command completion
-        tracker.update_from_command_complete(&CommandComplete{
-            tag: "BEGIN".to_string(),
-        }).unwrap();
+        tracker.update_from_command_complete(&"BEGIN".to_string()).unwrap();
         
         // Run a query in the transaction
         tracker.update_from_query("SELECT * FROM users").unwrap();
@@ -575,9 +579,7 @@ mod tests {
         tracker.update_from_query("COMMIT").unwrap();
         
         // Simulate command completion
-        tracker.update_from_command_complete(&CommandComplete{
-            tag: "COMMIT".to_string(),
-        }).unwrap();
+        tracker.update_from_command_complete(&"COMMIT".to_string()).unwrap();
         
         // Check state after commit
         assert_eq!(tracker.get_state(), TransactionState::Idle);
@@ -659,9 +661,7 @@ mod tests {
         tracker.update_from_query("ROLLBACK").unwrap();
         
         // Simulate command completion
-        tracker.update_from_command_complete(&CommandComplete{
-            tag: "ROLLBACK".to_string(),
-        }).unwrap();
+        tracker.update_from_command_complete(&"ROLLBACK".to_string()).unwrap();
         
         // Check state after rollback
         assert_eq!(tracker.get_state(), TransactionState::Idle);
@@ -676,9 +676,7 @@ mod tests {
         assert_eq!(tracker.get_state(), TransactionState::Implicit);
         
         // Simulate command completion which should auto-commit
-        tracker.update_from_command_complete(&CommandComplete{
-            tag: "SELECT 5".to_string(),
-        }).unwrap();
+        tracker.update_from_command_complete(&"SELECT 5".to_string()).unwrap();
         
         // Check state after auto-commit
         assert_eq!(tracker.get_state(), TransactionState::Idle);

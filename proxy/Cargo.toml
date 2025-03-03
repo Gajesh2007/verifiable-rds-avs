@@ -33,6 +33,7 @@ metrics = "0.21.1"
 metrics-exporter-prometheus = "0.12.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+regex = "1.10.2"
 
 # Security features
 governor = "0.6.0"
@@ -48,6 +49,9 @@ uuid = { version = "1.6.1", features = ["v4"] }
 rand = "0.8.5"
 ed25519-dalek = "2.1.0"
 hex = "0.4.3"
+hmac = "0.12.1"
+base64 = "0.21.7"
+md5 = "0.7.0"
 
 # EigenLayer SDK
 eigensdk = { version = "0.3.0", features = ["full"] }

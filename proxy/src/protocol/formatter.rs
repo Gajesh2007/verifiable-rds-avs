@@ -12,7 +12,7 @@ use log::debug;
 use std::collections::HashMap;
 
 /// Message formatter for PostgreSQL wire protocol responses
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct MessageFormatter {}
 
 impl MessageFormatter {

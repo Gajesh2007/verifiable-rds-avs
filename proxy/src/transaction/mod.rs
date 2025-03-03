@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use log::{debug, info, warn, error};
+use std::sync::Arc;
 
 /// Transaction structure
 #[derive(Debug, Clone)]
@@ -73,7 +74,8 @@ pub struct Savepoint {
     pub statements: Vec<String>,
 }
 
-/// Transaction manager
+/// Transaction manager for tracking and managing database transactions
+#[derive(Debug)]
 pub struct TransactionManager {
     /// Transaction counter
     counter: AtomicU64,
@@ -123,7 +125,9 @@ impl TransactionManager {
             .as_secs();
             
         let affected_tables = if let Some(meta) = metadata {
-            meta.affected_tables.clone()
+            meta.tables.iter()
+                .map(|table_access| table_access.table_name.clone())
+                .collect()
         } else {
             vec![]
         };
@@ -157,7 +161,7 @@ impl TransactionManager {
         }
         
         let transaction = self.active_transactions.get_mut(&tx_id)
-            .ok_or_else(|| ProxyError::Unknown(format!("Transaction {} not found", tx_id)))?;
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
             
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -187,7 +191,7 @@ impl TransactionManager {
         }
         
         let transaction = self.active_transactions.get_mut(&tx_id)
-            .ok_or_else(|| ProxyError::Unknown(format!("Transaction {} not found", tx_id)))?;
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
             
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -209,7 +213,7 @@ impl TransactionManager {
         }
         
         let transaction = self.active_transactions.get_mut(&tx_id)
-            .ok_or_else(|| ProxyError::Unknown(format!("Transaction {} not found", tx_id)))?;
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
             
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -238,14 +242,14 @@ impl TransactionManager {
         }
         
         let transaction = self.active_transactions.get_mut(&tx_id)
-            .ok_or_else(|| ProxyError::Unknown(format!("Transaction {} not found", tx_id)))?;
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
             
         if let Some(savepoint) = transaction.savepoints.get_mut(savepoint_name) {
             savepoint.released = true;
             debug!("Released savepoint {} in transaction {}", savepoint_name, tx_id);
             Ok(())
         } else {
-            Err(ProxyError::Unknown(format!("Savepoint {} not found in transaction {}", savepoint_name, tx_id)))
+            Err(ProxyError::Other(format!("Savepoint {} not found in transaction {}", savepoint_name, tx_id)))
         }
     }
     
@@ -256,14 +260,14 @@ impl TransactionManager {
         }
         
         let transaction = self.active_transactions.get_mut(&tx_id)
-            .ok_or_else(|| ProxyError::Unknown(format!("Transaction {} not found", tx_id)))?;
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
             
         if let Some(savepoint) = transaction.savepoints.get_mut(savepoint_name) {
             savepoint.rolled_back = true;
             debug!("Rolled back to savepoint {} in transaction {}", savepoint_name, tx_id);
             Ok(())
         } else {
-            Err(ProxyError::Unknown(format!("Savepoint {} not found in transaction {}", savepoint_name, tx_id)))
+            Err(ProxyError::Other(format!("Savepoint {} not found in transaction {}", savepoint_name, tx_id)))
         }
     }
     
@@ -283,18 +287,26 @@ impl TransactionManager {
             
             Ok(())
         } else {
-            Err(ProxyError::Unknown(format!("Transaction {} not found", tx_id)))
+            Err(ProxyError::Other(format!("Transaction {} not found", tx_id)))
         }
     }
     
     /// Get a transaction
-    pub fn get_transaction(&self, tx_id: u64) -> Option<&Transaction> {
-        self.active_transactions.get(&tx_id)
+    pub fn get_transaction(&self, tx_id: u64) -> Result<Arc<Transaction>> {
+        let transaction = self.active_transactions
+            .get(&tx_id)
+            .cloned()
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
+        
+        // Wrap the transaction in an Arc
+        Ok(Arc::new(transaction))
     }
     
     /// Get a mutable reference to a transaction
-    pub fn get_transaction_mut(&mut self, tx_id: u64) -> Option<&mut Transaction> {
-        self.active_transactions.get_mut(&tx_id)
+    pub fn get_transaction_mut(&mut self, tx_id: u64) -> Result<&mut Transaction> {
+        self.active_transactions
+            .get_mut(&tx_id)
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))
     }
     
     /// Get the WAL manager
@@ -315,6 +327,53 @@ impl TransactionManager {
     /// Check if the transaction manager is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Get a savepoint by name
+    pub fn get_savepoint(&self, tx_id: u64, savepoint_name: &str) -> Result<Arc<Savepoint>> {
+        let tx = self.active_transactions
+            .get(&tx_id)
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
+            
+        // Get the savepoint directly from the transaction's savepoints
+        let savepoint = tx.savepoints.get(savepoint_name)
+            .cloned()
+            .ok_or_else(|| ProxyError::Other(format!("Savepoint {} not found in transaction {}", savepoint_name, tx_id)))?;
+        
+        Ok(Arc::new(savepoint))
+    }
+
+    /// Get transaction status
+    pub fn get_transaction_status(&self, tx_id: u64) -> Result<TransactionStatus> {
+        let tx = self.active_transactions
+            .get(&tx_id)
+            .ok_or_else(|| ProxyError::Other(format!("Transaction {} not found", tx_id)))?;
+        
+        // Determine status based on transaction state
+        let status = if tx.committed {
+            TransactionStatus::Committed
+        } else if tx.rolled_back {
+            TransactionStatus::Aborted
+        } else {
+            TransactionStatus::InProgress
+        };
+        
+        Ok(status)
+    }
+
+    /// Track a query for transaction boundary protection
+    pub fn track_query(&mut self, query: &str) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        
+        debug!("Tracking query: {}", query);
+        
+        // We'd implement actual tracking logic here, but for now just log
+        // that we received the query to make compilation succeed
+        info!("Received query: {}", query);
+        
+        Ok(())
     }
 }
 

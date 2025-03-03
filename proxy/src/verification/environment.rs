@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio_postgres::{Config, NoTls, Client, Connection};
+use tokio_postgres::{Config, NoTls, Client};
 use log::{debug, info, warn, error};
 use regex::Regex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -87,7 +87,8 @@ pub struct VerificationExecutionResult {
     pub operations_executed: usize,
 }
 
-/// Connection pool entry for database connections
+/// A pool entry for a database connection
+#[derive(Debug)]
 struct PoolEntry {
     /// Client connection
     client: Client,
@@ -99,7 +100,8 @@ struct PoolEntry {
     last_used: Instant,
 }
 
-/// Database verification environment
+/// Verification environment for deterministic execution and verification
+#[derive(Debug)]
 pub struct VerificationEnvironment {
     /// Configuration for the verification environment
     config: VerificationEnvironmentConfig,
@@ -163,7 +165,7 @@ impl VerificationEnvironment {
     }
     
     /// Create a new database connection
-    async fn create_connection(&self) -> Result<(Client, Connection)> {
+    async fn create_connection(&self) -> Result<(Client, impl std::future::Future<Output = Result<(), tokio_postgres::Error>>)> {
         let config = self.config.connection_string.parse::<Config>()
             .map_err(|e| ProxyError::Config(format!("Failed to parse connection string: {}", e)))?;
             
@@ -175,55 +177,49 @@ impl VerificationEnvironment {
     
     /// Get a client from the connection pool or create a new one
     async fn get_client(&self) -> Result<Client> {
+        let mut pool = self.connection_pool.lock().unwrap();
+        let now = Instant::now();
+        
+        // First, check if there are any idle connections we can reuse
         if self.config.reuse_connections {
-            let mut pool = self.connection_pool.lock().unwrap();
-            
-            // Try to find an unused connection
             for entry in pool.iter_mut() {
                 if !entry.in_use {
+                    // Found an idle connection
+                    debug!("Reusing existing database connection");
                     entry.in_use = true;
-                    entry.last_used = Instant::now();
+                    entry.last_used = now;
+                    // We need to return a new client instance that points to the same connection
                     return Ok(entry.client.clone());
                 }
             }
-            
-            // If all connections are in use and we haven't reached the pool size, create a new one
-            if pool.len() < self.config.pool_size {
-                let (client, connection) = self.create_connection().await?;
-                
-                // Spawn a task to drive the connection
-                tokio::spawn(async move {
-                    if let Err(e) = connection.await {
-                        error!("Connection error: {}", e);
-                    }
-                });
-                
-                let client_clone = client.clone();
-                
-                pool.push(PoolEntry {
-                    client,
-                    in_use: true,
-                    last_used: Instant::now(),
-                });
-                
-                return Ok(client_clone);
-            }
-            
-            // If all connections are in use and we've reached the pool size, wait for one to become available
-            return Err(ProxyError::Database("All database connections are in use".to_string()));
-        } else {
-            // Create a new connection for each verification
+        }
+        
+        // No idle connections available, check if we can create a new one
+        if pool.len() < self.config.pool_size {
+            debug!("Creating new database connection (pool size: {}/{})", pool.len(), self.config.pool_size);
             let (client, connection) = self.create_connection().await?;
             
-            // Spawn a task to drive the connection
+            // Spawn a task to handle the connection
             tokio::spawn(async move {
                 if let Err(e) = connection.await {
                     error!("Connection error: {}", e);
                 }
             });
             
-            Ok(client)
+            // Store the connection for future reuse if enabled
+            if self.config.reuse_connections {
+                pool.push(PoolEntry {
+                    client: client.clone(),
+                    in_use: true,
+                    last_used: now,
+                });
+            }
+            
+            return Ok(client);
         }
+        
+        // No available connections and pool is full
+        return Err(ProxyError::Database("Connection pool is full".to_string()));
     }
     
     /// Release a client back to the pool
@@ -244,17 +240,16 @@ impl VerificationEnvironment {
     /// Set up a clean database state for verification based on the pre-state
     async fn setup_clean_environment(&self, client: &Client, pre_state: &DatabaseState) -> Result<()> {
         // Create the verification schema if it doesn't exist
-        client.execute(&format!("CREATE SCHEMA IF NOT EXISTS {}", self.config.verification_schema), &[])
-            .await
+        client.execute(&format!("CREATE SCHEMA IF NOT EXISTS {}", self.config.verification_schema), &[]).await
             .map_err(|e| ProxyError::Database(format!("Failed to create verification schema: {}", e)))?;
             
         // For each table in the pre-state, create the table structure and populate with data
-        for (table_name, table_state) in &pre_state.tables {
+        for (table_name, table_state) in pre_state.get_tables() {
             // Create the table with the correct schema
             self.create_table(client, &table_state.table_schema).await?;
             
-            // Insert the rows into the table
-            for (_, row) in &table_state.rows {
+            // Insert all rows into the table
+            for row in &table_state.rows {
                 self.insert_row(client, &table_state.table_schema, row).await?;
             }
         }
@@ -408,7 +403,7 @@ impl VerificationEnvironment {
             return Ok(result);
         }
         
-        // Get a client from the pool
+        // Get a client from the pool or create a new one
         let client = match self.get_client().await {
             Ok(client) => client,
             Err(e) => {
@@ -417,19 +412,21 @@ impl VerificationEnvironment {
             }
         };
         
-        // Set up a timeout for the verification
-        let timeout = Duration::from_millis(self.config.execution_timeout_ms);
-        
-        // Create a clean environment based on the pre-state
-        if let Err(e) = tokio::time::timeout(timeout, self.setup_clean_environment(&client, &pre_state)).await {
+        // Setup the clean environment for verification
+        if let Err(e) = tokio::time::timeout(
+            Duration::from_millis(self.config.execution_timeout_ms),
+            self.setup_clean_environment(&client, &pre_state)
+        ).await {
             self.release_client(&client);
             result.error = Some(format!("Timeout setting up verification environment: {}", e));
             return Ok(result);
-        } catch |e| {
+        } 
+        
+        if let Err(e) = self.setup_clean_environment(&client, &pre_state).await {
             self.release_client(&client);
             result.error = Some(format!("Error setting up verification environment: {}", e));
             return Ok(result);
-        };
+        }
         
         // Begin a transaction
         if let Err(e) = client.execute("BEGIN", &[]).await {
@@ -440,7 +437,10 @@ impl VerificationEnvironment {
         
         // Execute each query in the transaction
         for (i, query) in queries.iter().enumerate() {
-            if let Err(e) = tokio::time::timeout(timeout, self.execute_query(&client, query)).await {
+            if let Err(e) = tokio::time::timeout(
+                Duration::from_millis(self.config.execution_timeout_ms),
+                self.execute_query(&client, query)
+            ).await {
                 // Handle timeout
                 if let Err(rollback_err) = client.execute("ROLLBACK", &[]).await {
                     warn!("Failed to rollback after timeout: {}", rollback_err);
@@ -471,30 +471,28 @@ impl VerificationEnvironment {
         }
         
         // Capture the actual state after execution
-        let actual_state = match self.capture_actual_state(&client, &expected_post_state).await {
-            Ok(state) => state,
+        match self.capture_actual_state(&client, &expected_post_state).await {
+            Ok(actual_state) => {
+                result.actual_state = Some(actual_state.clone());
+                // Compare expected and actual states
+                let (mismatched_tables, mismatched_rows) = self.compare_states(&expected_post_state, &actual_state);
+                result.mismatched_tables = mismatched_tables;
+                result.mismatched_rows = mismatched_rows;
+                result.success = result.mismatched_tables.is_empty() && result.mismatched_rows.is_empty();
+            },
             Err(e) => {
-                self.release_client(&client);
                 result.error = Some(format!("Failed to capture actual state: {}", e));
-                return Ok(result);
             }
-        };
+        }
         
-        result.actual_state = Some(actual_state.clone());
-        
-        // Compare the expected and actual states
-        let comparison = self.compare_states(&expected_post_state, &actual_state);
-        result.mismatched_tables = comparison.0;
-        result.mismatched_rows = comparison.1;
-        
-        // Set success based on whether there are any mismatches
-        result.success = result.mismatched_tables.is_empty() && result.mismatched_rows.is_empty();
+        // Release the client back to the pool
+        self.release_client(&client);
         
         // Calculate execution time
         result.execution_time_ms = start_time.elapsed().as_millis() as u64;
         
-        // Release the client back to the pool
-        self.release_client(&client);
+        // Update the current transaction ID
+        self.current_transaction_id.store(transaction_id + 1, Ordering::SeqCst);
         
         Ok(result)
     }
@@ -546,7 +544,7 @@ impl VerificationEnvironment {
         let mut actual_state = DatabaseState::new();
         
         // For each table in the expected state, capture the actual state
-        for (table_name, expected_table) in &expected_state.tables {
+        for (table_name, expected_table) in expected_state.get_tables() {
             let schema_name = &expected_table.schema;
             
             // Capture the table schema
@@ -676,10 +674,11 @@ impl VerificationEnvironment {
         
         // Compare root hashes
         if expected.root_hash() != actual.root_hash() {
-            debug!("Root hash mismatch: expected {:?}, actual {:?}", expected.root_hash(), actual.root_hash());
+            debug!("Root hash mismatch: expected {:?}, got {:?}", 
+                expected.root_hash(), actual.root_hash());
             
             // Compare individual tables
-            for (table_name, expected_table) in &expected.tables {
+            for (table_name, _) in expected.tables().iter() {
                 // Check if the table exists in both states
                 if let Some(actual_table) = actual.get_table(table_name) {
                     // Compare table root hashes
@@ -723,15 +722,15 @@ impl VerificationEnvironment {
                         }
                     }
                 } else {
-                    // Table is missing in actual
-                    debug!("Table {} missing in actual state", table_name);
+                    // Table missing from actual state
+                    debug!("Table {} missing from actual state", table_name);
                     mismatched_tables.push(table_name.clone());
                 }
             }
             
             // Check for tables in actual that are not in expected
-            for (table_name, _) in &actual.tables {
-                if !expected.tables.contains_key(table_name) {
+            for (table_name, _) in actual.tables().iter() {
+                if !expected.has_table(table_name) {
                     debug!("Extra table {} in actual state", table_name);
                     mismatched_tables.push(table_name.clone());
                 }

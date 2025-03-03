@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use log::{debug, warn};
 
 /// Protocol validator for PostgreSQL wire protocol
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ProtocolValidator {
     /// Permitted message types in each connection state
     permitted_messages: HashMap<ConnectionState, Vec<PermittedMessageType>>,
@@ -66,7 +66,7 @@ enum PermittedMessageType {
     Startup(u8),
     
     /// Message type for specific tag
-    Specific(u8),
+    Specific(char),
     
     /// Message type for query related commands
     Query,
@@ -79,96 +79,120 @@ enum PermittedMessageType {
 }
 
 impl ProtocolValidator {
-    /// Create a new protocol validator
+    /// Create a new protocol validator with the given configuration
     pub fn new(config: ProtocolValidatorConfig) -> Self {
-        let mut validator = Self {
-            permitted_messages: HashMap::new(),
+        Self {
+            permitted_messages: ProtocolValidator::initialize_permitted_messages(),
             sequence_counter: 0,
             last_message_type: None,
             config,
-        };
-        
-        // Initialize permitted message types for each connection state
-        validator.initialize_permitted_messages();
-        
-        validator
+        }
     }
     
-    /// Initialize the permitted message types for each connection state
-    fn initialize_permitted_messages(&mut self) {
-        // Initial state permits startup message, cancel request, and SSL request
-        self.permitted_messages.insert(
+    /// Validate a frontend message against the current connection state
+    pub fn validate_message(&self, message: &FrontendMessage, state: ConnectionState) -> Result<()> {
+        // Simple implementation for now
+        debug!("Validating message: {:?} in state {:?}", message, state);
+        
+        // Check if the message type is permitted in the current state
+        let message_type = self.get_message_type(message);
+        
+        let permitted = match self.permitted_messages.get(&state) {
+            Some(permitted_types) => {
+                permitted_types.iter().any(|permitted_type| match permitted_type {
+                    PermittedMessageType::Any => true,
+                    PermittedMessageType::Specific(c) => message_type.starts_with(&c.to_string()),
+                    PermittedMessageType::Query => message_type == "Query",
+                    PermittedMessageType::Extended => {
+                        matches!(message_type, "Parse" | "Bind" | "Execute" | "Describe" | "Sync" | "Flush")
+                    },
+                    PermittedMessageType::Startup(_) => message_type == "Startup",
+                })
+            },
+            None => false,
+        };
+        
+        if !permitted {
+            return Err(ProxyError::Protocol(format!(
+                "Message type {:?} not permitted in state {:?}",
+                message_type, state
+            )));
+        }
+        
+        Ok(())
+    }
+    
+    // Helper method to get the message type
+    fn get_message_type(&self, message: &FrontendMessage) -> &'static str {
+        match message {
+            FrontendMessage::Startup { .. } => "Startup",
+            FrontendMessage::Password(_) => "Password",
+            FrontendMessage::Query(_) => "Query",
+            FrontendMessage::Parse { .. } => "Parse",
+            FrontendMessage::Bind { .. } => "Bind",
+            FrontendMessage::Execute { .. } => "Execute",
+            FrontendMessage::Describe { .. } => "Describe",
+            FrontendMessage::Sync => "Sync",
+            FrontendMessage::Flush => "Flush",
+            FrontendMessage::Close { .. } => "Close",
+            FrontendMessage::Terminate => "Terminate",
+            _ => "Unknown",
+        }
+    }
+    
+    // Initialize permitted messages for different states
+    fn initialize_permitted_messages() -> HashMap<ConnectionState, Vec<PermittedMessageType>> {
+        let mut permitted_messages = HashMap::new();
+        
+        // Initial state permits only startup
+        permitted_messages.insert(
             ConnectionState::Initial,
-            vec![
-                PermittedMessageType::Startup(0),   // Startup
-                PermittedMessageType::Specific(b'X'), // Terminate
-            ],
+            vec![PermittedMessageType::Specific('S')], // 'S' for Startup
         );
         
-        // Authenticating state permits password, SASL responses, and terminate
-        self.permitted_messages.insert(
+        // Authenticating state permits only password
+        permitted_messages.insert(
             ConnectionState::Authenticating,
-            vec![
-                PermittedMessageType::Specific(b'p'), // Password
-                PermittedMessageType::Specific(b'X'), // Terminate
-            ],
+            vec![PermittedMessageType::Specific('P')], // 'P' for Password
         );
         
-        // Ready state permits queries, extended protocol, and terminate
-        self.permitted_messages.insert(
+        // Ready state permits most messages
+        permitted_messages.insert(
             ConnectionState::Ready,
             vec![
-                PermittedMessageType::Specific(b'Q'), // Simple query
-                PermittedMessageType::Specific(b'P'), // Parse
-                PermittedMessageType::Specific(b'B'), // Bind
-                PermittedMessageType::Specific(b'E'), // Execute
-                PermittedMessageType::Specific(b'D'), // Describe
-                PermittedMessageType::Specific(b'S'), // Sync
-                PermittedMessageType::Specific(b'H'), // Flush
-                PermittedMessageType::Specific(b'C'), // Close
-                PermittedMessageType::Specific(b'X'), // Terminate
+                PermittedMessageType::Query,
+                PermittedMessageType::Extended,
+                PermittedMessageType::Specific('T'), // 'T' for Terminate
             ],
         );
         
-        // InTransaction state permits the same messages as Ready
-        self.permitted_messages.insert(
+        // InTransaction state permits most messages
+        permitted_messages.insert(
             ConnectionState::InTransaction,
             vec![
-                PermittedMessageType::Specific(b'Q'), // Simple query
-                PermittedMessageType::Specific(b'P'), // Parse
-                PermittedMessageType::Specific(b'B'), // Bind
-                PermittedMessageType::Specific(b'E'), // Execute
-                PermittedMessageType::Specific(b'D'), // Describe
-                PermittedMessageType::Specific(b'S'), // Sync
-                PermittedMessageType::Specific(b'H'), // Flush
-                PermittedMessageType::Specific(b'C'), // Close
-                PermittedMessageType::Specific(b'X'), // Terminate
+                PermittedMessageType::Query,
+                PermittedMessageType::Extended,
+                PermittedMessageType::Specific('T'), // 'T' for Terminate
             ],
         );
         
-        // InFailedTransaction state permits sync, rollback via query, and terminate
-        self.permitted_messages.insert(
+        // InFailedTransaction state permits most messages
+        permitted_messages.insert(
             ConnectionState::InFailedTransaction,
             vec![
-                PermittedMessageType::Specific(b'Q'), // Simple query (for ROLLBACK)
-                PermittedMessageType::Specific(b'S'), // Sync
-                PermittedMessageType::Specific(b'X'), // Terminate
+                PermittedMessageType::Query,
+                PermittedMessageType::Extended,
+                PermittedMessageType::Specific('T'), // 'T' for Terminate
             ],
         );
         
-        // Closing state only permits terminate
-        self.permitted_messages.insert(
+        // Closing state permits only terminate
+        permitted_messages.insert(
             ConnectionState::Closing,
-            vec![
-                PermittedMessageType::Specific(b'X'), // Terminate
-            ],
+            vec![PermittedMessageType::Specific('T')], // 'T' for Terminate
         );
         
-        // Closed state doesn't permit any messages
-        self.permitted_messages.insert(
-            ConnectionState::Closed,
-            vec![],
-        );
+        permitted_messages
     }
     
     /// Validate a frontend message in the current connection state
@@ -197,7 +221,7 @@ impl ProtocolValidator {
                 permitted.contains(&PermittedMessageType::Startup(0))
             }
             FrontendMessage::Password(_) => {
-                permitted.contains(&PermittedMessageType::Specific(b'p'))
+                permitted.contains(&PermittedMessageType::Specific('p'))
             }
             FrontendMessage::Query(query) => {
                 // Validate query length
@@ -219,7 +243,7 @@ impl ProtocolValidator {
                     }
                 }
                 
-                permitted.contains(&PermittedMessageType::Specific(b'Q'))
+                permitted.contains(&PermittedMessageType::Query)
             }
             FrontendMessage::Parse { query, .. } => {
                 // Validate query length
@@ -231,7 +255,7 @@ impl ProtocolValidator {
                     )));
                 }
                 
-                permitted.contains(&PermittedMessageType::Specific(b'P'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Bind { param_values, .. } => {
                 // Validate parameter sizes
@@ -247,38 +271,38 @@ impl ProtocolValidator {
                     }
                 }
                 
-                permitted.contains(&PermittedMessageType::Specific(b'B'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Execute { .. } => {
-                permitted.contains(&PermittedMessageType::Specific(b'E'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Describe { .. } => {
-                permitted.contains(&PermittedMessageType::Specific(b'D'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Sync => {
-                permitted.contains(&PermittedMessageType::Specific(b'S'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Flush => {
-                permitted.contains(&PermittedMessageType::Specific(b'H'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Close { .. } => {
-                permitted.contains(&PermittedMessageType::Specific(b'C'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Terminate => {
-                permitted.contains(&PermittedMessageType::Specific(b'X'))
+                permitted.contains(&PermittedMessageType::Specific('T'))
             }
             FrontendMessage::CopyData(_) => {
                 // Copy operations have their own sub-protocol
-                permitted.contains(&PermittedMessageType::Specific(b'd'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::CopyDone => {
-                permitted.contains(&PermittedMessageType::Specific(b'c'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::CopyFail(_) => {
-                permitted.contains(&PermittedMessageType::Specific(b'f'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::FunctionCall { .. } => {
-                permitted.contains(&PermittedMessageType::Specific(b'F'))
+                permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Unknown { tag, .. } => {
                 if !self.config.allow_unknown_messages {

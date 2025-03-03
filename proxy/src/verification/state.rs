@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::hash::{Hash, Hasher};
 
 /// Table schema information
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,10 +58,27 @@ pub struct ColumnDefinition {
 }
 
 /// Row identifier
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowId {
     /// Primary key values
     pub values: HashMap<String, String>,
+}
+
+// Implement Hash manually for RowId since HashMap doesn't implement Hash
+impl Hash for RowId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Sort the keys to ensure consistent hashing
+        let mut keys: Vec<&String> = self.values.keys().collect();
+        keys.sort();
+        
+        // Hash each key-value pair in sorted order
+        for key in keys {
+            key.hash(state);
+            if let Some(value) = self.values.get(key) {
+                value.hash(state);
+            }
+        }
+    }
 }
 
 /// Table row
@@ -155,7 +173,7 @@ pub struct TableStateDiff {
 }
 
 /// Database state
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DatabaseState {
     /// Tables in the database
     tables: HashMap<String, TableState>,
@@ -173,7 +191,8 @@ pub struct DatabaseState {
     modified_at: u64,
 }
 
-/// State capture manager
+/// State capture manager for database state
+#[derive(Debug)]
 pub struct StateCaptureManager {
     /// Current database state
     state: RwLock<DatabaseState>,
@@ -181,7 +200,6 @@ pub struct StateCaptureManager {
     /// Schema cache
     schema_cache: Arc<Mutex<HashMap<String, TableSchema>>>,
     
-    /// Connection pool for database access
     // In a real implementation, this would be a connection pool to the database
     // For now, we'll simulate it
     // pool: Arc<Pool<PostgresConnectionManager<NoTls>>>,
@@ -276,6 +294,16 @@ impl DatabaseState {
         self.root_hash = Some(root_hash);
         
         Ok(root_hash)
+    }
+    
+    /// Get a reference to the tables map
+    pub fn tables(&self) -> &HashMap<String, TableState> {
+        &self.tables
+    }
+    
+    /// Check if a table exists in the database state
+    pub fn has_table(&self, name: &str) -> bool {
+        self.tables.contains_key(name)
     }
 }
 

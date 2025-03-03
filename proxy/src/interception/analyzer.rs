@@ -125,6 +125,16 @@ impl QueryType {
             QueryType::Savepoint
         )
     }
+    
+    /// Check if the query type is read-only
+    pub fn is_read_only(&self) -> bool {
+        match self {
+            QueryType::Select => true,
+            QueryType::Explain => true,
+            // All other query types are considered to modify data
+            _ => false,
+        }
+    }
 }
 
 /// Table access type
@@ -424,7 +434,6 @@ impl QueryAnalyzer {
     fn create_basic_metadata(&self, query: &str) -> Result<QueryMetadata> {
         let lowercase_query = query.to_lowercase();
         
-        // Try to determine query type from keywords
         let query_type = if lowercase_query.starts_with("select") {
             QueryType::Select
         } else if lowercase_query.starts_with("insert") {
@@ -439,7 +448,11 @@ impl QueryAnalyzer {
             QueryType::AlterTable
         } else if lowercase_query.starts_with("drop table") {
             QueryType::DropTable
-        } else if lowercase_query.starts_with("begin") || lowercase_query.starts_with("start transaction") {
+        } else if lowercase_query.starts_with("create index") {
+            QueryType::CreateIndex
+        } else if lowercase_query.starts_with("drop index") {
+            QueryType::DropIndex
+        } else if lowercase_query.starts_with("begin") {
             QueryType::BeginTransaction
         } else if lowercase_query.starts_with("commit") {
             QueryType::Commit
@@ -454,40 +467,21 @@ impl QueryAnalyzer {
         } else if lowercase_query.starts_with("show") {
             QueryType::Show
         } else {
-            QueryType::Other("Unknown".to_string())
+            QueryType::Other(query.to_string())
         };
         
-        // Try to extract table names using a simple regex-like approach
-        let mut tables = Vec::new();
-        
-        // For unparseable queries, we can't reliably extract tables
-        // but we can make a best effort for common patterns
-        
-        // Check for determinism using pattern matching
-        let mut is_deterministic = true;
-        let mut non_deterministic_operations = Vec::new();
-        
-        for pattern in &self.non_deterministic_patterns {
-            if lowercase_query.contains(pattern) {
-                is_deterministic = false;
-                non_deterministic_operations.push(NonDeterministicOperation {
-                    operation_type: "Function".to_string(),
-                    description: format!("Non-deterministic function: {}", pattern),
-                    can_fix_automatically: false,
-                    suggested_fix: None,
-                });
-            }
-        }
+        // Clone query_type before moving it into the struct
+        let query_type_clone = query_type.clone();
         
         Ok(QueryMetadata {
             query: query.to_string(),
             query_type,
-            tables,
-            is_deterministic,
-            non_deterministic_operations,
+            tables: Vec::new(),
+            is_deterministic: true,
+            non_deterministic_operations: Vec::new(),
             complexity_score: 1, // Default complexity for unparseable queries
             special_handling: false,
-            verifiable: query_type.is_dml() || query_type.is_ddl(),
+            verifiable: query_type_clone.is_dml() || query_type_clone.is_ddl(),
             cacheable: false, // Unparseable queries are not cacheable
             extra: HashMap::new(),
             non_deterministic_reason: None,
@@ -498,8 +492,8 @@ impl QueryAnalyzer {
     fn extract_query_type(&self, statement: &Statement) -> QueryType {
         match statement {
             Statement::Query(query) => {
-                // Check if it's a SELECT query
-                match &query.body {
+                // Handle the Box<SetExpr> correctly
+                match query.body.as_ref() {
                     SetExpr::Select(_) => QueryType::Select,
                     SetExpr::Insert { .. } => QueryType::Insert,
                     _ => QueryType::Select, // Default to SELECT for other query types
@@ -610,23 +604,39 @@ impl QueryAnalyzer {
     
     /// Extract tables from a query
     fn extract_tables_from_query(&self, query: &Query, tables: &mut Vec<TableAccess>, access_type: AccessType) {
-        match &query.body {
+        // Use as_ref() to get a reference to the SetExpr inside the Box
+        match query.body.as_ref() {
             SetExpr::Select(select) => {
-                self.extract_tables_from_select(select, tables, access_type);
+                // Clone access_type before passing it
+                self.extract_tables_from_select(select, tables, access_type.clone());
             }
-            SetExpr::Insert { table_name, .. } => {
-                tables.push(TableAccess {
-                    table_name: self.object_name_to_string(table_name),
-                    schema_name: self.extract_schema_name(table_name),
-                    access_type: AccessType::Write,
-                    columns: None,
-                });
+            SetExpr::Insert { source, .. } => {
+                // Instead of using table_name directly, extract it from the query
+                if let Some(name) = &query.into {
+                    if !name.0.is_empty() {
+                        let table_name = self.object_name_to_string(&name.0[0]);
+                        let schema_name = self.extract_schema_name(&name.0[0]);
+                        
+                        tables.push(TableAccess {
+                            table_name,
+                            schema_name,
+                            access_type: access_type.clone(),
+                            columns: None,
+                        });
+                    }
+                }
+                
+                // Process the source query if present
+                if let Some(source_query) = source {
+                    self.extract_tables_from_query(source_query, tables, AccessType::Read);
+                }
             }
             SetExpr::Query(subquery) => {
-                self.extract_tables_from_query(subquery, tables, access_type);
+                // Clone access_type before passing it
+                self.extract_tables_from_query(subquery, tables, access_type.clone());
             }
             _ => {
-                // Other query types don't access tables or we can't determine
+                // Other query types
             }
         }
     }
@@ -634,16 +644,19 @@ impl QueryAnalyzer {
     /// Extract tables from a SELECT statement
     fn extract_tables_from_select(&self, select: &Select, tables: &mut Vec<TableAccess>, access_type: AccessType) {
         for table_with_joins in &select.from {
-            self.extract_tables_from_table_with_joins(table_with_joins, tables, access_type);
+            // Clone access_type before passing it
+            self.extract_tables_from_table_with_joins(table_with_joins, tables, access_type.clone());
         }
     }
     
     /// Extract tables from a FROM clause with joins
     fn extract_tables_from_table_with_joins(&self, table_with_joins: &TableWithJoins, tables: &mut Vec<TableAccess>, access_type: AccessType) {
-        self.extract_tables_from_table_factor(&table_with_joins.relation, tables, access_type);
+        // Clone access_type before passing it
+        self.extract_tables_from_table_factor(&table_with_joins.relation, tables, access_type.clone());
         
         for join in &table_with_joins.joins {
-            self.extract_tables_from_table_factor(&join.relation, tables, access_type);
+            // Clone access_type before passing it
+            self.extract_tables_from_table_factor(&join.relation, tables, access_type.clone());
         }
     }
     

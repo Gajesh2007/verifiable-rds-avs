@@ -8,13 +8,14 @@ use crate::error::{ProxyError, Result};
 use log::{debug, warn, info};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+use serde::{Serialize, Deserialize};
 
 /// Domain separators to prevent second-preimage attacks
 const LEAF_DOMAIN: &[u8; 4] = b"LEAF";
 const NODE_DOMAIN: &[u8; 4] = b"NODE";
 
 /// Position of a node in the Merkle tree
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct NodePosition {
     /// Level in the tree (0 = leaves)
     pub level: u8,
@@ -36,8 +37,8 @@ pub struct MerkleLeaf {
     pub index: u64,
 }
 
-/// A Merkle tree proof node
-#[derive(Debug, Clone)]
+/// A node in a Merkle proof
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofNode {
     /// Hash of the sibling
     pub sibling_hash: [u8; 32],
@@ -46,8 +47,8 @@ pub struct ProofNode {
     pub is_left: bool,
 }
 
-/// A Merkle proof
-#[derive(Debug, Clone)]
+/// A proof of inclusion in a Merkle tree
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
     /// Leaf hash being proven
     pub leaf_hash: [u8; 32],
@@ -70,6 +71,7 @@ pub struct MerkleProof {
 
 /// A secure Merkle tree
 /// Uses domain separation and salting to prevent second-preimage attacks
+#[derive(Debug, Clone)]
 pub struct MerkleTree {
     /// Leaves of the tree
     leaves: Vec<MerkleLeaf>,

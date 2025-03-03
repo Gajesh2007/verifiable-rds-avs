@@ -7,8 +7,8 @@ use crate::error::{ProxyError, Result};
 use crate::protocol::auth::AuthHandler;
 use crate::protocol::connection::ClientConnection;
 use crate::protocol::validator::ProtocolValidator;
-use crate::protocol::transaction::TransactionTracker;
-use crate::security::rate_limiter::{RateLimiter, RateLimiterConfig};
+use crate::transaction::TransactionManager;
+use crate::security::{RateLimiter, RateLimiterConfig};
 use tokio::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::net::SocketAddr;
@@ -21,7 +21,7 @@ pub struct ProxyServer {
     config: ProxyConfig,
     
     /// Rate limiter for DoS protection
-    rate_limiter: RateLimiter,
+    rate_limiter: Arc<Mutex<RateLimiter>>,
     
     /// Whether the server is running
     running: Arc<Mutex<bool>>,
@@ -30,8 +30,15 @@ pub struct ProxyServer {
 impl ProxyServer {
     /// Create a new proxy server
     pub fn new(config: ProxyConfig) -> Result<Self> {
-        // Create the rate limiter for DoS protection
-        let rate_limiter = RateLimiter::new(config.rate_limiter_config.clone());
+        // Create rate limiter
+        let rate_limiter_config = RateLimiterConfig {
+            enabled: config.rate_limiter_config.enabled,
+            rate_limit: config.rate_limit,
+            allow_list: Vec::new(),
+            block_list: Vec::new(),
+        };
+        
+        let rate_limiter = Arc::new(Mutex::new(RateLimiter::new(rate_limiter_config)?));
         
         Ok(Self {
             config,
@@ -104,7 +111,7 @@ impl ProxyServer {
     /// Handle a client connection
     async fn handle_connection(&self, client_stream: TcpStream, client_addr: SocketAddr) -> Result<()> {
         // Check if the client is allowed to connect
-        if !self.rate_limiter.check_connection(client_addr.ip()) {
+        if !self.rate_limiter.lock().unwrap().check_connection(client_addr.ip()) {
             debug!("Connection from {} rejected by rate limiter", client_addr);
             return Ok(());
         }
@@ -115,19 +122,19 @@ impl ProxyServer {
         let backend_stream = TcpStream::connect(&self.config.backend_addr).await
             .map_err(|e| ProxyError::Other(format!("Failed to connect to backend: {}", e)))?;
         
-        // Create a transaction tracker
-        let transaction_tracker = Arc::new(Mutex::new(TransactionTracker::new()));
+        // Create a transaction manager
+        let transaction_manager = Arc::new(Mutex::new(TransactionManager::new()));
         
         // Create a client connection
         let mut client_connection = ClientConnection::new(
             client_stream,
             client_addr,
             self.config.clone(),
-            transaction_tracker,
+            transaction_manager,
         );
         
         // Handle the connection
-        match client_connection.handle().await {
+        match client_connection.handle_connection().await {
             Ok(()) => {
                 info!("Connection from {} closed", client_addr);
                 Ok(())

@@ -43,8 +43,17 @@ pub struct ProxyConfig {
     /// Rate limiter configuration
     pub rate_limiter_config: RateLimiterConfig,
     
+    /// Maximum query length in bytes
+    pub max_query_length: usize,
+    
+    /// Whether to enable transaction boundary protection
+    pub transaction_boundary_protection: bool,
+    
+    /// Rate limit (requests per minute)
+    pub rate_limit: u32,
+    
     /// Connection timeout
-    pub connection_timeout: Duration,
+    pub connection_timeout: u64,
     
     /// Maximum number of connections
     pub max_connections: usize,
@@ -63,6 +72,9 @@ pub struct ProxyConfig {
     
     /// Metrics address
     pub metrics_addr: Option<SocketAddr>,
+    
+    /// Message timeout in seconds
+    pub message_timeout: u64,
 }
 
 /// TLS configuration
@@ -93,13 +105,17 @@ impl Default for ProxyConfig {
             executor_config: ExecutorConfig::default(),
             verification_config: VerificationConfig::default(),
             rate_limiter_config: RateLimiterConfig::default(),
-            connection_timeout: Duration::from_secs(30),
+            max_query_length: 8192,
+            transaction_boundary_protection: true,
+            rate_limit: 0,
+            connection_timeout: 30,
             max_connections: 100,
             log_queries: true,
             log_level: "info".to_string(),
             log_file: None,
             enable_metrics: false,
             metrics_addr: None,
+            message_timeout: 0,
         }
     }
 }
@@ -131,6 +147,13 @@ impl ProxyConfig {
             // Enable query logging in development
             log_queries: true,
             log_level: "debug".to_string(),
+            // Enable rate limiting in development
+            rate_limiter_config: RateLimiterConfig {
+                enabled: true,
+                rate_limit: 1000, // 1000 requests per minute
+                allow_list: vec!["127.0.0.1".parse().unwrap()], // Allow localhost
+                block_list: vec![],
+            },
             ..Default::default()
         }
     }
