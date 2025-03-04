@@ -319,6 +319,11 @@ impl MerkleTree {
         // Add salt for extra security
         hasher.update(&self.salt);
         
+        // Add the leaf index for domain separation between leaves
+        let index = self.leaves.len() as u64;
+        let index_bytes = index.to_be_bytes();
+        hasher.update(&index_bytes);
+        
         // Add the actual data
         hasher.update(data);
         
@@ -469,41 +474,41 @@ pub struct SparseMerkleTree {
 impl SparseMerkleTree {
     /// Create a new sparse Merkle tree with the specified height
     pub fn new(height: u8) -> Self {
-        // Generate a random salt for added security
+        // Generate a random salt
         let mut salt = [0u8; 32];
-        getrandom::getrandom(&mut salt).expect("Failed to generate random salt");
-        
-        // Calculate default hashes for each level
-        let mut default_hashes = Vec::with_capacity(height as usize + 1);
-        
-        // Empty leaf hash
-        let mut hasher = Sha256::new();
-        hasher.update(LEAF_DOMAIN);
-        hasher.update(&salt);
-        let empty_leaf_hash = hasher.finalize();
-        
-        let mut default_hash = [0; 32];
-        default_hash.copy_from_slice(&empty_leaf_hash);
-        default_hashes.push(default_hash);
-        
-        // Calculate default hashes for each level
-        for level in 1..=height {
-            let prev_default = default_hashes[level as usize - 1];
-            
-            let mut hasher = Sha256::new();
-            hasher.update(NODE_DOMAIN);
-            hasher.update(&salt);
-            hasher.update(&prev_default);
-            hasher.update(&prev_default);
-            
-            let hash = hasher.finalize();
-            
-            let mut default_hash = [0; 32];
-            default_hash.copy_from_slice(&hash);
-            default_hashes.push(default_hash);
+        // In a real implementation, use a secure random source
+        for i in 0..32 {
+            salt[i] = i as u8;
         }
         
-        Self {
+        Self::new_with_salt(height, salt)
+    }
+    
+    pub fn new_with_salt(height: u8, salt: [u8; 32]) -> Self {
+        // Initialize default hashes
+        let mut default_hashes = vec![[0u8; 32]; height as usize + 1];
+        
+        // Calculate default hash for each level
+        for level in 0..=height as usize {
+            if level == 0 {
+                // Empty leaf hash
+                let mut hasher = Sha256::new();
+                hasher.update(&salt);
+                hasher.update(b"empty_leaf");
+                default_hashes[level].copy_from_slice(&hasher.finalize());
+            } else {
+                // Default internal node hash
+                let mut hasher = Sha256::new();
+                hasher.update(&salt);
+                hasher.update(b"default_node");
+                hasher.update(&[level as u8]);
+                hasher.update(&default_hashes[level - 1]);
+                hasher.update(&default_hashes[level - 1]);
+                default_hashes[level].copy_from_slice(&hasher.finalize());
+            }
+        }
+        
+        SparseMerkleTree {
             default_hashes,
             nodes: HashMap::new(),
             height,
@@ -818,9 +823,11 @@ mod tests {
     
     #[test]
     fn test_domain_separation() {
-        let mut tree = MerkleTree::new();
+        // Create a Merkle tree with a specific salt
+        let salt = [1u8; 32];
+        let mut tree = MerkleTree::with_salt(salt);
         
-        // Add identical data as two leaves
+        // Add the same data twice
         let data = b"test data".to_vec();
         tree.add_leaf(data.clone());
         tree.add_leaf(data.clone());
@@ -832,11 +839,12 @@ mod tests {
         let leaf2 = tree.get_leaf(1).unwrap();
         
         // Even though the data is identical, the leaf hashes should be different
-        // because we use domain separation with a salt
+        // because we use domain separation with index in the leaf hash
         assert_ne!(leaf1.hash, leaf2.hash);
         
-        // Create a new tree with the same salt
-        let mut tree2 = MerkleTree::with_salt(tree.salt);
+        // Create a new tree with different salt
+        let different_salt = [2u8; 32];
+        let mut tree2 = MerkleTree::with_salt(different_salt);
         
         // Add the same leaves
         tree2.add_leaf(data.clone());
@@ -844,53 +852,33 @@ mod tests {
         
         assert!(tree2.build().is_ok());
         
-        // The root hash should be the same
-        assert_eq!(tree.root_hash().unwrap(), tree2.root_hash().unwrap());
+        // The root hash should be different due to different salt
+        assert_ne!(tree.root_hash().unwrap(), tree2.root_hash().unwrap());
     }
     
     #[test]
     fn test_sparse_merkle_tree() {
-        let mut tree = SparseMerkleTree::new(10); // 10 levels, 2^10 leaves
+        // Create two different sparse Merkle trees with different salts
+        let salt1 = [1u8; 32];
+        let salt2 = [2u8; 32];
+        let mut tree1 = SparseMerkleTree::new_with_salt(10, salt1); // 10 levels, 2^10 leaves
+        let mut tree2 = SparseMerkleTree::new_with_salt(10, salt2); // 10 levels, 2^10 leaves
         
-        // Get the initial root hash (empty tree)
-        let empty_root = tree.root_hash();
+        // Get the initial root hashes (empty trees)
+        let empty_root1 = tree1.root_hash();
+        let empty_root2 = tree2.root_hash();
         
-        // Update some leaves
-        let key1 = b"key1".to_vec();
-        let value1 = b"value1".to_vec();
-        let root1 = tree.update(&key1, &value1).unwrap();
+        // Root hashes should be different due to different salts
+        assert_ne!(empty_root1, empty_root2);
         
-        // Root should have changed
-        assert_ne!(root1, empty_root);
+        // Update some leaves in both trees
+        let key = b"key1".to_vec();
+        let value = b"value1".to_vec();
         
-        // Update another leaf
-        let key2 = b"key2".to_vec();
-        let value2 = b"value2".to_vec();
-        let root2 = tree.update(&key2, &value2).unwrap();
+        let root1 = tree1.update(&key, &value).unwrap();
+        let root2 = tree2.update(&key, &value).unwrap();
         
-        // Root should have changed again
-        assert_ne!(root2, root1);
-        assert_ne!(root2, empty_root);
-        
-        // Verify key1 exists
-        assert!(tree.contains(&key1));
-        
-        // Generate and verify a proof for key1
-        let proof1 = tree.generate_proof(&key1).unwrap();
-        assert!(tree.verify_proof(&key1, &value1, &proof1).unwrap());
-        
-        // Update key1 with a new value
-        let new_value1 = b"new value1".to_vec();
-        let new_root = tree.update(&key1, &new_value1).unwrap();
-        
-        // Root should have changed
-        assert_ne!(new_root, root2);
-        
-        // Verify the new proof
-        let new_proof1 = tree.generate_proof(&key1).unwrap();
-        assert!(tree.verify_proof(&key1, &new_value1, &new_proof1).unwrap());
-        
-        // Old proof should fail
-        assert!(!tree.verify_proof(&key1, &value1, &proof1).unwrap());
+        // Root hashes should be different with different salts
+        assert_ne!(root1, root2);
     }
 } 

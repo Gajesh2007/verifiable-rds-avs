@@ -120,11 +120,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Backend PostgreSQL: {}", proxy.config().backend_addr);
 
     // Start the proxy server
-    let server_handle = proxy.start().await?;
+    proxy.start().await?;
 
-    // Wait for termination signal
+    // Create a signal handler future
     let mut sigterm = signal(SignalKind::terminate())?;
     let mut sigint = signal(SignalKind::interrupt())?;
+    
+    // Wait for termination signal
     tokio::select! {
         _ = sigterm.recv() => info!("Received SIGTERM"),
         _ = sigint.recv() => info!("Received SIGINT"),
@@ -132,7 +134,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clean shutdown
     info!("Shutting down proxy server");
-    // Handle graceful shutdown here
+    proxy.stop().await?;  // Ensure we properly shut down the server
     
+    // Give background tasks time to exit
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    
+    info!("Proxy server shutdown complete");
     Ok(())
 } 

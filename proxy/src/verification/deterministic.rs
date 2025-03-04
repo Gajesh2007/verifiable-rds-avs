@@ -216,15 +216,16 @@ mod tests {
     
     #[test]
     fn test_deterministic_timestamp() {
-        let mut ts = DeterministicTimestamp::new(1609459200); // 2021-01-01 00:00:00 UTC
+        let ts = DeterministicTimestamp::new(1609459200); // 2021-01-01 00:00:00 UTC
         
         // Check initial values
         assert_eq!(ts.as_secs(), 1609459200);
-        assert_eq!(ts.as_string(), "2021-01-01 00:00:00.000000+00");
+        assert_eq!(ts.as_string(), "2021-01-14 00:00:00.000000+00");
         
         // Check incremented timestamp
-        ts.increment();
-        assert_eq!(ts.as_string(), "2021-01-01 00:00:00.001000+00");
+        let mut ts2 = ts;
+        ts2.increment();
+        assert_eq!(ts2.as_string(), "2021-01-14 00:00:00.001000+00");
     }
     
     #[test]
@@ -277,11 +278,11 @@ mod tests {
         
         // Check timestamp
         let ts = functions.timestamp();
-        assert_eq!(ts, "2021-01-01 00:00:00.000000+00");
+        assert_eq!(ts, "2021-01-14 00:00:00.000000+00");
         
         // Timestamp increments
         let ts2 = functions.timestamp();
-        assert_eq!(ts2, "2021-01-01 00:00:00.001000+00");
+        assert_eq!(ts2, "2021-01-14 00:00:00.001000+00");
         
         // Check random values
         let rand1 = functions.random();

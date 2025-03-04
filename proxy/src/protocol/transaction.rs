@@ -237,7 +237,14 @@ impl TransactionTracker {
                 self.reset();
                 Ok(())
             },
-            _ => Ok(())
+            _ => {
+                // If we're in an implicit transaction, auto-commit after command completion
+                if self.transaction.state == TransactionState::Implicit {
+                    debug!("Auto-committing implicit transaction after command completion");
+                    self.reset();
+                }
+                Ok(())
+            }
         }
     }
     

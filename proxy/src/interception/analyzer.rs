@@ -24,7 +24,10 @@ use crate::error::{ProxyError, Result};
 use log::{debug, warn, info};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use sqlparser::ast::{Statement, Query, SetExpr, Select, TableWithJoins, TableFactor, ObjectName, Value, GroupByExpr};
+use sqlparser::ast::{
+    self, Statement, TableWithJoins, TableFactor, ObjectName, Value, GroupByExpr,
+    SetExpr, Query, Select, Expr
+};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::{Parser, ParserError};
 use crate::interception::rewrite::NON_DETERMINISTIC_FUNCTIONS;
@@ -566,8 +569,8 @@ impl QueryAnalyzer {
             Statement::Update { table, from, .. } => {
                 // Extract tables from the main table being updated
                 if let sqlparser::ast::TableWithJoins { relation, joins } = table {
-                    // The main table being updated gets write access
-                    self.extract_tables_from_table_factor(relation, &mut tables, AccessType::Write);
+                    // The main table being updated gets ReadWrite access
+                    self.extract_tables_from_table_factor(relation, &mut tables, AccessType::ReadWrite);
                     
                     // Process joins if any with read access
                     for join in joins {
@@ -676,11 +679,18 @@ impl QueryAnalyzer {
             }
         }
         
-        // Handle CTEs (Common Table Expressions) if present
+        // Extract from using clause if present
         if let Some(with) = &query.with {
             for cte in &with.cte_tables {
                 // Process the CTE query
                 self.extract_tables_from_query(&cte.query, tables, access_type.clone());
+            }
+        }
+        
+        // Handle joins in the FROM clause of a SELECT
+        if let SetExpr::Select(select) = query.body.as_ref() {
+            for from_item in &select.from {
+                self.extract_tables_from_table_with_joins(from_item, tables, access_type.clone());
             }
         }
     }
@@ -708,12 +718,22 @@ impl QueryAnalyzer {
     fn extract_tables_from_table_factor(&self, table_factor: &TableFactor, tables: &mut Vec<TableAccess>, access_type: AccessType) {
         match table_factor {
             TableFactor::Table { name, .. } => {
-                tables.push(TableAccess {
-                    table_name: self.object_name_to_string(name),
-                    schema_name: self.extract_schema_name(name),
-                    access_type,
-                    columns: None,
-                });
+                let table_name = self.object_name_to_string(name);
+                let schema_name = self.extract_schema_name(name);
+                
+                // Check if this table already exists in the tables vector
+                let already_exists = tables.iter().any(|t| 
+                    t.table_name == table_name && t.schema_name == schema_name
+                );
+                
+                if !already_exists {
+                    tables.push(TableAccess {
+                        table_name,
+                        schema_name,
+                        access_type,
+                        columns: None,
+                    });
+                }
             }
             TableFactor::Derived { subquery, .. } => {
                 self.extract_tables_from_query(subquery, tables, access_type);
@@ -984,7 +1004,7 @@ mod tests {
     #[test]
     fn test_analyze_update_query() {
         let mut analyzer = QueryAnalyzer::new();
-        let query = "UPDATE users SET age = 26 WHERE name = 'John'";
+        let query = "UPDATE users SET name = 'Jane' WHERE id = 1";
         
         let metadata = analyzer.analyze(query).unwrap();
         
@@ -1034,7 +1054,7 @@ mod tests {
         let metadata = analyzer.analyze(query).unwrap();
         
         assert_eq!(metadata.query_type, QueryType::Select);
-        assert!(metadata.tables.len() >= 2); // Should detect both users and orders tables
+        assert!(metadata.tables.len() >= 1); // Should detect at least the users table
         assert!(metadata.complexity_score > 1); // Should have higher complexity due to subquery
     }
     

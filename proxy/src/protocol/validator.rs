@@ -106,7 +106,10 @@ impl ProtocolValidator {
                     PermittedMessageType::Extended => {
                         matches!(message_type, "Parse" | "Bind" | "Execute" | "Describe" | "Sync" | "Flush")
                     },
-                    PermittedMessageType::Startup(_) => message_type == "Startup",
+                    PermittedMessageType::Startup(_) => {
+                        // Special case for startup message
+                        matches!(message, FrontendMessage::Startup { .. })
+                    },
                 })
             },
             None => false,
@@ -135,7 +138,7 @@ impl ProtocolValidator {
             FrontendMessage::Sync => "Sync",
             FrontendMessage::Flush => "Flush",
             FrontendMessage::Close { .. } => "Close",
-            FrontendMessage::Terminate => "Terminate",
+            FrontendMessage::Terminate => "X",
             _ => "Unknown",
         }
     }
@@ -147,13 +150,21 @@ impl ProtocolValidator {
         // Initial state permits only startup
         permitted_messages.insert(
             ConnectionState::Initial,
-            vec![PermittedMessageType::Specific('S')], // 'S' for Startup
+            vec![
+                PermittedMessageType::Specific('S'), // 'S' for Startup
+                PermittedMessageType::Startup(0),    // 0 for Startup message (doesn't have a message type tag)
+                PermittedMessageType::Specific('X'), // 'X' for Terminate - allowed in all states
+            ],
         );
         
         // Authenticating state permits only password
         permitted_messages.insert(
             ConnectionState::Authenticating,
-            vec![PermittedMessageType::Specific('P')], // 'P' for Password
+            vec![
+                PermittedMessageType::Specific('P'), // 'P' for Password
+                PermittedMessageType::Specific('p'), // 'p' for lowercase password (client can use either)
+                PermittedMessageType::Specific('X'), // 'X' for Terminate - allowed in all states
+            ],
         );
         
         // Ready state permits most messages
@@ -162,7 +173,7 @@ impl ProtocolValidator {
             vec![
                 PermittedMessageType::Query,
                 PermittedMessageType::Extended,
-                PermittedMessageType::Specific('T'), // 'T' for Terminate
+                PermittedMessageType::Specific('X'), // 'X' for Terminate
             ],
         );
         
@@ -172,7 +183,7 @@ impl ProtocolValidator {
             vec![
                 PermittedMessageType::Query,
                 PermittedMessageType::Extended,
-                PermittedMessageType::Specific('T'), // 'T' for Terminate
+                PermittedMessageType::Specific('X'), // 'X' for Terminate
             ],
         );
         
@@ -182,14 +193,14 @@ impl ProtocolValidator {
             vec![
                 PermittedMessageType::Query,
                 PermittedMessageType::Extended,
-                PermittedMessageType::Specific('T'), // 'T' for Terminate
+                PermittedMessageType::Specific('X'), // 'X' for Terminate
             ],
         );
         
         // Closing state permits only terminate
         permitted_messages.insert(
             ConnectionState::Closing,
-            vec![PermittedMessageType::Specific('T')], // 'T' for Terminate
+            vec![PermittedMessageType::Specific('X')], // 'X' for Terminate
         );
         
         permitted_messages
@@ -289,7 +300,7 @@ impl ProtocolValidator {
                 permitted.contains(&PermittedMessageType::Extended)
             }
             FrontendMessage::Terminate => {
-                permitted.contains(&PermittedMessageType::Specific('T'))
+                permitted.contains(&PermittedMessageType::Specific('X'))
             }
             FrontendMessage::CopyData(_) => {
                 // Copy operations have their own sub-protocol

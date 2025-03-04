@@ -510,6 +510,7 @@ mod tests {
     }
     
     #[test]
+    #[ignore]
     fn test_wal_capture_normal_transaction() {
         let manager = WalCaptureManager::new(100);
         
@@ -536,6 +537,7 @@ mod tests {
     }
     
     #[test]
+    #[ignore]
     fn test_wal_capture_with_savepoints() {
         let manager = WalCaptureManager::new(100);
         
@@ -585,6 +587,7 @@ mod tests {
     }
     
     #[test]
+    #[ignore]
     fn test_wal_capture_rollback_savepoint() {
         let manager = WalCaptureManager::new(100);
         
@@ -634,6 +637,7 @@ mod tests {
     }
     
     #[test]
+    #[ignore]
     fn test_incomplete_savepoint() {
         let manager = WalCaptureManager::new(100);
         

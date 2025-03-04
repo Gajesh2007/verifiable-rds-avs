@@ -3,19 +3,19 @@ use crate::config::ProxyConfig;
 use crate::error::{ProxyError, Result};
 use crate::protocol::auth::AuthHandler;
 use crate::protocol::message::{
-    AuthenticationRequest, BackendMessage, ErrorOrNoticeFields, FieldDescription,
+    BackendMessage, ErrorOrNoticeFields, FieldDescription,
     FrontendMessage, TransactionStatus,
 };
 use crate::protocol::parser::MessageParser;
 use crate::protocol::formatter::MessageFormatter;
 use crate::protocol::validator::ProtocolValidator;
 use crate::transaction::TransactionManager;
-use bytes::{Bytes, BytesMut, Buf, BufMut};
-use log::{debug, error, info, warn};
+use bytes::{Bytes, BytesMut};
+use log::{debug, error, warn};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_postgres::config::Config as PgConfig;

@@ -5,7 +5,7 @@
 
 use crate::error::{ProxyError, Result};
 use crate::protocol::message::{
-    AuthenticationRequest, BackendMessage, ErrorOrNoticeFields, FieldDescription, TransactionStatus,
+    AuthenticationRequest, BackendMessage, ErrorOrNoticeFields, TransactionStatus,
 };
 use bytes::{BufMut, Bytes, BytesMut};
 use log::debug;
@@ -348,10 +348,9 @@ mod tests {
         let message = BackendMessage::CommandComplete("SELECT 1".to_string());
         let bytes = formatter.format_backend_message(&message).unwrap();
         assert_eq!(bytes[0], b'C'); // Message type
-        assert_eq!(bytes[1..5], 12_i32.to_be_bytes()); // Message length (4 + 8 bytes)
+        assert_eq!(bytes[1..5], 13_i32.to_be_bytes()); // Message length (4 + 8 bytes + null terminator)
         // "SELECT 1" + null terminator
-        assert_eq!(&bytes[5..12], b"SELECT 1");
-        assert_eq!(bytes[12], 0); // Null terminator
+        assert_eq!(&bytes[5..14], b"SELECT 1\0"); // Include the null terminator in the comparison
     }
 
     #[test]

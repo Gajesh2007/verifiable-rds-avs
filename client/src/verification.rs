@@ -187,6 +187,74 @@ pub struct RowProof {
     pub verified: bool,
 }
 
+/// Query analysis result structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryAnalysisResult {
+    /// Original query
+    pub query: String,
+    
+    /// Whether the query is deterministic
+    pub is_deterministic: bool,
+    
+    /// Non-deterministic operations found in the query
+    pub non_deterministic_operations: Vec<NonDeterministicOperation>,
+    
+    /// Tables accessed by the query
+    pub affected_tables: Vec<TableAccess>,
+    
+    /// Complexity score
+    pub complexity_score: u32,
+    
+    /// Security level of the query
+    pub security_level: SecurityLevel,
+}
+
+/// Non-deterministic operation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NonDeterministicOperation {
+    /// Operation type
+    pub operation_type: String,
+    
+    /// Description
+    pub description: String,
+    
+    /// Whether operation can be fixed automatically
+    pub can_fix_automatically: bool,
+    
+    /// Suggested fix
+    pub suggested_fix: Option<String>,
+}
+
+/// Table access type
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TableAccess {
+    /// Table name
+    pub table_name: String,
+    
+    /// Access type (read/write)
+    pub access_type: String,
+}
+
+/// Security level
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityLevel {
+    /// Query is safe and deterministic
+    #[serde(rename = "safe")]
+    Safe,
+    
+    /// Query needs to be rewritten for determinism
+    #[serde(rename = "requires_rewrite")]
+    RequiresRewrite,
+    
+    /// Query needs special isolation
+    #[serde(rename = "requires_isolation")]
+    RequiresIsolation,
+    
+    /// Query cannot be made deterministic
+    #[serde(rename = "unsupported")]
+    Unsupported,
+}
+
 /// Verification client for interacting with the verification system
 pub struct VerificationClient {
     /// Base URL for the verification API
@@ -456,5 +524,90 @@ impl VerificationClient {
         
         let block_number: u64 = response.json().await?;
         Ok(block_number)
+    }
+    
+    /// Analyze a query for determinism and security
+    pub async fn analyze_query(&self, query: &str) -> Result<QueryAnalysisResult> {
+        let url = format!("{}/api/v1/analyze", self.base_url);
+        
+        let response = self.client
+            .post(&url)
+            .json(&serde_json::json!({
+                "query": query
+            }))
+            .timeout(self.timeout)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = match response.text().await {
+                Ok(text) => format!("Server error: {}", text),
+                Err(_) => format!("Server error: {}", status),
+            };
+            return Err(VerificationError::Server(error));
+        }
+        
+        let result = response.json::<QueryAnalysisResult>().await?;
+        Ok(result)
+    }
+    
+    /// Rewrite a query for deterministic execution
+    pub async fn rewrite_query(&self, query: &str) -> Result<String> {
+        let url = format!("{}/api/v1/rewrite", self.base_url);
+        
+        let response = self.client
+            .post(&url)
+            .json(&serde_json::json!({
+                "query": query
+            }))
+            .timeout(self.timeout)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = match response.text().await {
+                Ok(text) => format!("Server error: {}", text),
+                Err(_) => format!("Server error: {}", status),
+            };
+            return Err(VerificationError::Server(error));
+        }
+        
+        let result = response.json::<serde_json::Value>().await?;
+        let rewritten_query = result["rewritten_query"].as_str()
+            .ok_or_else(|| VerificationError::Other("Invalid response".to_string()))?
+            .to_string();
+            
+        Ok(rewritten_query)
+    }
+    
+    /// Get information about available deterministic functions
+    pub async fn get_deterministic_functions(&self) -> Result<Vec<String>> {
+        let url = format!("{}/api/v1/functions/deterministic", self.base_url);
+        
+        let response = self.client
+            .get(&url)
+            .timeout(self.timeout)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            let status = response.status();
+            let error = match response.text().await {
+                Ok(text) => format!("Server error: {}", text),
+                Err(_) => format!("Server error: {}", status),
+            };
+            return Err(VerificationError::Server(error));
+        }
+        
+        let result = response.json::<serde_json::Value>().await?;
+        let functions = result["functions"].as_array()
+            .ok_or_else(|| VerificationError::Other("Invalid response".to_string()))?
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+            
+        Ok(functions)
     }
 } 

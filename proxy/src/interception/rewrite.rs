@@ -297,7 +297,10 @@ impl QueryRewriter {
         if !metadata.is_deterministic {
             let (new_statement, action) = self.replace_non_deterministic_functions(&statement, metadata)?;
             statement = new_statement;
-            rewrite_action = action;
+            
+            if action != RewriteAction::None {
+                rewrite_action = action;
+            }
         }
         
         // Add explicit ORDER BY if needed
@@ -330,6 +333,12 @@ impl QueryRewriter {
         // Convert rewritten statement back to SQL
         let rewritten_query = self.statement_to_string(&statement);
         
+        // Special case for NOW() function which might not be properly handled by the parser
+        if !metadata.is_deterministic && query.to_lowercase().contains("now()") && !rewritten_query.contains("verification_timestamp") {
+            let direct_replacement = query.replace("now()", "verification_timestamp()").replace("NOW()", "verification_timestamp()");
+            return Ok((direct_replacement, RewriteAction::Rewritten(RewriteReason::NonDeterministicFunction)));
+        }
+        
         if rewritten_query == query {
             // No changes were made
             return Ok((query.to_string(), RewriteAction::None));
@@ -342,62 +351,31 @@ impl QueryRewriter {
     fn replace_non_deterministic_functions(&self, statement: &Statement, metadata: &QueryMetadata) 
         -> Result<(Statement, RewriteAction)> {
         
-        let mut new_statement = statement.clone();
-        let mut has_replacements = false;
+        // If the query is already deterministic, no need to replace functions
+        if metadata.is_deterministic {
+            return Ok((statement.clone(), RewriteAction::None));
+        }
         
-        // Currently, this is a placeholder for actual implementation
-        // In a real implementation, we would walk the AST and replace function calls
+        // Check if there are any non-deterministic operations that can be fixed
+        let has_fixable_operations = metadata.non_deterministic_operations
+            .iter()
+            .any(|op| op.can_fix_automatically);
         
-        // For now, we'll use a simple text-based replacement as a demonstration
-        if metadata.non_deterministic_operations.iter().any(|op| op.can_fix_automatically) {
-            let statement_str = self.statement_to_string(statement);
-            let mut rewritten_str = statement_str.clone();
-            
-            for replacement in self.function_replacements.values() {
-                let original_pattern = format!("{}(", replacement.original);
-                let replacement_pattern = format!("{}(", replacement.replacement);
-                
-                if rewritten_str.to_lowercase().contains(&original_pattern.to_lowercase()) {
-                    rewritten_str = rewritten_str.replace(&original_pattern, &replacement_pattern);
-                    rewritten_str = rewritten_str.replace(&original_pattern.to_uppercase(), &replacement_pattern);
-                    has_replacements = true;
-                }
-                
-                // Also check for function calls without parentheses (e.g., CURRENT_TIMESTAMP)
-                let original_word = format!("{} ", replacement.original);
-                let replacement_word = format!("{}() ", replacement.replacement);
-                
-                if rewritten_str.to_lowercase().contains(&original_word.to_lowercase()) {
-                    rewritten_str = rewritten_str.replace(&original_word, &replacement_word);
-                    rewritten_str = rewritten_str.replace(&original_word.to_uppercase(), &replacement_word);
-                    has_replacements = true;
-                }
-            }
-            
-            if has_replacements {
-                // Parse the rewritten query back into a statement
-                let dialect = PostgreSqlDialect {};
-                match Parser::parse_sql(&dialect, &rewritten_str) {
-                    Ok(statements) => {
-                        if !statements.is_empty() {
-                            new_statement = statements[0].clone();
-                        }
-                    }
-                    Err(err) => {
-                        debug!("Failed to parse rewritten query: {}", err);
-                        // Fall back to the original statement
-                        new_statement = statement.clone();
-                        has_replacements = false;
-                    }
-                }
+        if !has_fixable_operations {
+            if self.config.reject_unfixable_queries {
+                return Ok((statement.clone(), RewriteAction::Rejected(
+                    "Query contains non-deterministic operations that cannot be fixed automatically".to_string()
+                )));
+            } else {
+                // We don't reject, but we also don't modify anything
+                return Ok((statement.clone(), RewriteAction::None));
             }
         }
         
-        if has_replacements {
-            Ok((new_statement, RewriteAction::Rewritten(RewriteReason::NonDeterministicFunction)))
-        } else {
-            Ok((new_statement, RewriteAction::None))
-        }
+        // Clone the statement for modification
+        let modified_statement = self.replace_functions(statement)?;
+        
+        Ok((modified_statement, RewriteAction::Rewritten(RewriteReason::NonDeterministicFunction)))
     }
     
     /// Add explicit ordering to a query
@@ -497,7 +475,7 @@ impl QueryRewriter {
         
         // Parse the query to determine if it's a SELECT without an ORDER BY
         if query.to_lowercase().starts_with("select") && !query.to_lowercase().contains("order by") {
-            // If the query has a FROM clause, add an ORDER BY primary key
+            // If the query has a FROM clause, add an ORDER BY clause with primary keys
             if query.to_lowercase().contains(" from ") {
                 // Extract table names
                 let tables = self.extract_tables_from_query(query)?;
@@ -581,6 +559,78 @@ impl QueryRewriter {
         // For now, we'll return a simple default
         Some(vec!["id".to_string()])
     }
+
+    /// Replace non-deterministic functions in the statement with deterministic equivalents
+    fn replace_functions(&self, statement: &Statement) -> Result<Statement> {
+        // Convert statement to string for text-based replacement
+        // This is a simplified approach; in a real implementation, we'd walk the AST
+        let statement_str = self.statement_to_string(statement);
+        let mut rewritten_str = statement_str.clone();
+        let mut has_replacements = false;
+        
+        // First, handle specific common functions like NOW() directly
+        if rewritten_str.to_lowercase().contains("now()") {
+            rewritten_str = rewritten_str.replace("now()", "verification_timestamp()");
+            rewritten_str = rewritten_str.replace("NOW()", "verification_timestamp()");
+            has_replacements = true;
+        }
+        
+        // Also check for CURRENT_TIMESTAMP
+        if rewritten_str.to_lowercase().contains("current_timestamp") {
+            rewritten_str = rewritten_str.replace("current_timestamp", "verification_timestamp()");
+            rewritten_str = rewritten_str.replace("CURRENT_TIMESTAMP", "verification_timestamp()");
+            has_replacements = true;
+        }
+        
+        // Then process the configured replacements
+        for replacement in self.function_replacements.values() {
+            let original_pattern = format!("{}(", replacement.original);
+            let replacement_pattern = format!("{}(", replacement.replacement);
+            
+            if rewritten_str.to_lowercase().contains(&original_pattern.to_lowercase()) {
+                rewritten_str = rewritten_str.replace(&original_pattern.to_lowercase(), &replacement_pattern);
+                rewritten_str = rewritten_str.replace(&original_pattern.to_uppercase(), &replacement_pattern);
+                has_replacements = true;
+            }
+            
+            // Also check for function calls without parentheses (e.g., CURRENT_TIMESTAMP)
+            let original_word = format!("{} ", replacement.original);
+            let replacement_word = format!("{}() ", replacement.replacement);
+            
+            if rewritten_str.to_lowercase().contains(&original_word.to_lowercase()) {
+                rewritten_str = rewritten_str.replace(&original_word.to_lowercase(), &replacement_word);
+                rewritten_str = rewritten_str.replace(&original_word.to_uppercase(), &replacement_word);
+                has_replacements = true;
+            }
+        }
+        
+        // For debugging
+        debug!("Original query: {}", statement_str);
+        debug!("Rewritten query: {}", rewritten_str);
+        
+        if has_replacements {
+            // Parse the rewritten query back into a statement
+            use sqlparser::dialect::PostgreSqlDialect;
+            use sqlparser::parser::Parser;
+            
+            let dialect = PostgreSqlDialect {};
+            match Parser::parse_sql(&dialect, &rewritten_str) {
+                Ok(statements) => {
+                    if !statements.is_empty() {
+                        return Ok(statements[0].clone());
+                    }
+                }
+                Err(err) => {
+                    debug!("Failed to parse rewritten query: {}", err);
+                    // Fall back to the original statement
+                    return Ok(statement.clone());
+                }
+            }
+        }
+        
+        // If no replacements were made or parsing failed, return the original statement
+        Ok(statement.clone())
+    }
 }
 
 #[cfg(test)]
@@ -589,6 +639,19 @@ mod tests {
     use crate::interception::analyzer::{QueryAnalyzer, AccessType, TableAccess};
     
     fn create_test_metadata(query: &str, is_deterministic: bool) -> QueryMetadata {
+        let non_deterministic_operations = if is_deterministic {
+            vec![]
+        } else {
+            vec![
+                NonDeterministicOperation {
+                    operation_type: "FUNCTION".to_string(),
+                    description: "Timestamp function".to_string(),
+                    can_fix_automatically: true,
+                    suggested_fix: Some("verification_timestamp()".to_string()),
+                }
+            ]
+        };
+        
         QueryMetadata {
             query: query.to_string(),
             query_type: QueryType::Select,
@@ -601,7 +664,7 @@ mod tests {
                 }
             ],
             is_deterministic,
-            non_deterministic_operations: vec![],
+            non_deterministic_operations,
             complexity_score: 10,
             special_handling: false,
             verifiable: true,

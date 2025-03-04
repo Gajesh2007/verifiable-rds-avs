@@ -102,10 +102,19 @@ impl ProxyServer {
     }
     
     /// Stop the proxy server
-    pub fn stop(&self) {
+    pub async fn stop(&self) -> Result<()> {
         let mut running = self.running.lock().unwrap();
+        if !*running {
+            return Ok(());  // Already stopped
+        }
+        
         *running = false;
         info!("Stopping proxy server...");
+        
+        // Give any active connections time to close gracefully
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        
+        Ok(())
     }
     
     /// Handle a client connection
@@ -160,12 +169,30 @@ impl ProxyServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::runtime::Runtime;
     
-    #[tokio::test]
-    async fn test_server_creation() {
+    #[test]
+    fn test_server_creation() {
         let config = ProxyConfig::default();
         let server = ProxyServer::new(config).unwrap();
         
         assert!(!server.is_running());
+    }
+    
+    #[test]
+    fn test_server_start_stop() {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async {
+            let config = ProxyConfig::default();
+            let server = ProxyServer::new(config).unwrap();
+            
+            // Start the server
+            server.start().await.unwrap();
+            assert!(server.is_running());
+            
+            // Stop the server
+            server.stop().await.unwrap();
+            assert!(!server.is_running());
+        });
     }
 } 

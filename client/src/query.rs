@@ -250,6 +250,63 @@ impl QueryClient {
         self.client = None;
         Ok(())
     }
+    
+    /// Analyze a query for determinism and security without executing it
+    pub async fn analyze_query(&mut self, query: &str) -> Result<crate::verification::QueryAnalysisResult> {
+        if let Some(ref verification_client) = self.verification_client {
+            match verification_client.analyze_query(query).await {
+                Ok(result) => Ok(result),
+                Err(e) => Err(QueryError::Verification(e.to_string())),
+            }
+        } else {
+            Err(QueryError::Verification("No verification client provided".to_string()))
+        }
+    }
+    
+    /// Rewrite a query for deterministic execution without executing it
+    pub async fn rewrite_query(&mut self, query: &str) -> Result<String> {
+        if let Some(ref verification_client) = self.verification_client {
+            match verification_client.rewrite_query(query).await {
+                Ok(result) => Ok(result),
+                Err(e) => Err(QueryError::Verification(e.to_string())),
+            }
+        } else {
+            Err(QueryError::Verification("No verification client provided".to_string()))
+        }
+    }
+    
+    /// Get information about available deterministic functions
+    pub async fn get_deterministic_functions(&mut self) -> Result<Vec<String>> {
+        if let Some(ref verification_client) = self.verification_client {
+            match verification_client.get_deterministic_functions().await {
+                Ok(result) => Ok(result),
+                Err(e) => Err(QueryError::Verification(e.to_string())),
+            }
+        } else {
+            Err(QueryError::Verification("No verification client provided".to_string()))
+        }
+    }
+    
+    /// Execute a query with automatic rewriting for determinism
+    pub async fn query_with_rewrite(&mut self, query: &str) -> Result<QueryResult> {
+        if let Some(ref verification_client) = self.verification_client {
+            // First try to rewrite the query for determinism
+            let rewritten_query = match verification_client.rewrite_query(query).await {
+                Ok(result) => result,
+                Err(e) => {
+                    // Fall back to original query if rewriting fails
+                    eprintln!("Warning: Query rewriting failed: {}", e);
+                    query.to_string()
+                }
+            };
+            
+            // Execute the rewritten query
+            self.query(&rewritten_query).await
+        } else {
+            // If no verification client, just execute the original query
+            self.query(query).await
+        }
+    }
 }
 
 /// Convert a PostgreSQL row to a map

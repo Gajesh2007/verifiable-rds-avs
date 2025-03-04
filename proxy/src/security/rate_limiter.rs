@@ -330,25 +330,33 @@ mod tests {
     
     #[test]
     fn test_rate_limiter_check() {
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        
+        // Create a rate limiter with a low limit
         let mut limiter = RateLimiter::new(RateLimiterConfig {
             enabled: true,
-            rate_limit: 10,
+            rate_limit: 2, // Only allow 2 requests per minute
             allow_list: vec![],
             block_list: vec![],
         }).unwrap();
         
-        let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
-        
-        // Should allow the first request
+        // First check should pass
         assert!(limiter.check(ip));
         
-        // Add to allow list
-        limiter.add_to_allow_list(ip);
+        // Second check should pass
         assert!(limiter.check(ip));
         
-        // Add to block list
+        // Third check should fail due to rate limiting
+        assert!(!limiter.check(ip));
+        
+        // Test block list functionality
         limiter.add_to_block_list(ip);
         assert!(!limiter.check(ip));
+        
+        // Test allow list functionality
+        limiter.remove_from_block_list(ip);
+        limiter.add_to_allow_list(ip);
+        assert!(limiter.check(ip));
     }
     
     #[test]

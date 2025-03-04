@@ -30,4 +30,31 @@ pub use server::ProxyServer;
 pub mod verification;
 
 // Transaction processing
-pub mod transaction; 
+pub mod transaction;
+
+// Test utilities
+#[cfg(test)]
+pub mod test_utils {
+    use std::future::Future;
+    use std::time::Duration;
+    use tokio::time::timeout;
+    
+    /// Run an async test with a timeout to prevent hanging
+    pub async fn run_with_timeout<F, T>(fut: F, timeout_duration: Duration) -> T 
+    where
+        F: Future<Output = T>,
+    {
+        match timeout(timeout_duration, fut).await {
+            Ok(result) => result,
+            Err(_) => panic!("Test timed out after {:?}", timeout_duration),
+        }
+    }
+    
+    /// Run a test with the default 5-second timeout
+    pub async fn run_test<F, T>(fut: F) -> T 
+    where
+        F: Future<Output = T>,
+    {
+        run_with_timeout(fut, Duration::from_secs(5)).await
+    }
+} 
