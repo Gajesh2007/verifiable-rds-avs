@@ -3,6 +3,7 @@ members = [
     "core",
     "proxy",
     "client",
+    "verification",
 ]
 
 [workspace.package]

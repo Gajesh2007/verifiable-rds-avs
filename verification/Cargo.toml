@@ -1,0 +1,55 @@
+[package]
+name = "verifiable-db-verification"
+version = "0.1.0"
+edition = "2021"
+description = "Verification service for Verifiable RDS AVS"
+license = "MIT"
+
+[dependencies]
+verifiable-db-core = { path = "../core" }
+
+# Async runtime and networking
+tokio = { version = "1.35.1", features = ["full"] }
+axum = "0.7.2"
+tower = "0.4.13"
+tower-http = { version = "0.4.4", features = ["trace", "cors"] }
+
+# Database
+tokio-postgres = { version = "0.7.10", features = ["with-serde_json-1", "with-uuid-1"] }
+
+# Logging and metrics
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+log = "0.4.20"
+env_logger = "0.11.0"
+
+# Configuration
+clap = { version = "4.4.13", features = ["derive"] }
+config = "0.13.4"
+dotenvy = "0.15.7"
+
+# Serialization
+serde = { version = "1.0.193", features = ["derive"] }
+serde_json = "1.0.111"
+
+# Error handling
+thiserror = "1.0.56"
+anyhow = "1.0.79"
+
+# Cryptography
+sha2 = "0.10.8"
+merkle_light = "0.4.0"
+hex = "0.4.3"
+
+# Time 
+chrono = "0.4.31"
+
+# Testing
+[dev-dependencies]
+mockall = "0.12.1"
+rstest = "0.18.2"
+tempfile = "3.8.1"
+
+[[bin]]
+name = "verifiable-db-verification"
+path = "src/main.rs" 
