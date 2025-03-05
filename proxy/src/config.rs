@@ -75,6 +75,15 @@ pub struct ProxyConfig {
     
     /// Message timeout in seconds
     pub message_timeout: u64,
+    
+    /// Database user
+    pub db_user: Option<String>,
+    
+    /// Database password
+    pub db_password: Option<String>,
+    
+    /// Database name
+    pub db_name: Option<String>,
 }
 
 /// TLS configuration
@@ -116,6 +125,9 @@ impl Default for ProxyConfig {
             enable_metrics: false,
             metrics_addr: None,
             message_timeout: 0,
+            db_user: None,
+            db_password: None,
+            db_name: None,
         }
     }
 }

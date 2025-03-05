@@ -1,9 +1,16 @@
-FROM rust:1.78-slim as builder
+FROM rust:1.82-slim as builder
 
 WORKDIR /usr/src
+
+# Install pkg-config and OpenSSL development libraries
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY core ./core
 COPY verification/Cargo.toml verification/Cargo.lock ./verification/
 COPY verification/src ./verification/src
+COPY contracts ./contracts
 
 WORKDIR /usr/src/verification
 
@@ -24,6 +31,7 @@ RUN apt-get update && \
 
 WORKDIR /app
 COPY --from=builder /usr/src/verification/target/release/verifiable-db-verification /app/
+COPY --from=builder /usr/src/contracts /app/contracts
 
 EXPOSE 8080
 
@@ -32,6 +40,7 @@ ENV PG_PORT=5432
 ENV PG_USER=verifiable
 ENV PG_PASSWORD=verifiable
 ENV PG_DATABASE=verifiable_db
-ENV API_PORT=8080
+ENV PROXY_HOST=proxy
+ENV PROXY_PORT=5432
 
 CMD ["/app/verifiable-db-verification"] 

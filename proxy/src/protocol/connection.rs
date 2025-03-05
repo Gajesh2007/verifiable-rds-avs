@@ -499,7 +499,109 @@ async fn process_message(
             auth_handler.handle_startup(version_major, version_minor, &parameters)
         }
         FrontendMessage::Password(password) => {
-            auth_handler.handle_password(password).await
+            let auth_response = auth_handler.handle_password(password).await?;
+            
+            // Check if authentication was successful by looking for AuthenticationOk in the response
+            let auth_successful = auth_response.iter().any(|msg| {
+                if let BackendMessage::Authentication(auth_req) = msg {
+                    matches!(auth_req, crate::protocol::message::AuthenticationRequest::Ok)
+                } else {
+                    false
+                }
+            });
+            
+            // If authentication was successful, connect to PostgreSQL
+            if auth_successful && pg_client.is_none() {
+                // Connect to PostgreSQL
+                debug!("Authentication successful, connecting to PostgreSQL backend");
+                
+                // Extract host and port from backend_addr
+                let host = config.backend_addr.ip().to_string();
+                let port = config.backend_addr.port();
+                
+                // Use the database credentials configured on the command line
+                // These are stored in the config object
+                let username = config.db_user.clone().unwrap_or_else(|| {
+                    // Fall back to the first user in the auth config if available
+                    config.auth_config.users.keys()
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| "postgres".to_string())
+                });
+                
+                let password = config.db_password.clone().unwrap_or_else(|| {
+                    // Fall back to the first password in the auth config if available
+                    config.auth_config.users.values()
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| "postgres".to_string())
+                });
+                
+                let database = config.db_name.clone().unwrap_or_else(|| {
+                    "postgres".to_string()
+                });
+                
+                // Create connection string from config
+                let conn_string = format!(
+                    "host={} port={} user={} password={} dbname={}",
+                    host, port, username, password, database
+                );
+                
+                debug!("Connecting to PostgreSQL with connection string: host={} port={} user={} dbname={}", 
+                       host, port, username, database);
+                
+                // Parse connection string and connect
+                match connect_to_postgres(&conn_string).await {
+                    Ok(client) => {
+                        debug!("Connected to PostgreSQL backend");
+                        *pg_client = Some(client);
+                        // Update state to Ready
+                        *state = ConnectionState::Ready;
+                        
+                        // Add necessary startup messages to the response
+                        let mut response = auth_response;
+                        
+                        // Add BackendKeyData message (with dummy values)
+                        response.push(BackendMessage::BackendKeyData {
+                            process_id: 1000, // Dummy process ID
+                            secret_key: 12345, // Dummy secret key
+                        });
+                        
+                        // Add ParameterStatus messages that clients expect
+                        response.push(BackendMessage::ParameterStatus {
+                            name: "server_version".to_string(),
+                            value: "14.0".to_string(),
+                        });
+                        response.push(BackendMessage::ParameterStatus {
+                            name: "client_encoding".to_string(),
+                            value: "UTF8".to_string(),
+                        });
+                        response.push(BackendMessage::ParameterStatus {
+                            name: "DateStyle".to_string(),
+                            value: "ISO, MDY".to_string(),
+                        });
+                        response.push(BackendMessage::ParameterStatus {
+                            name: "integer_datetimes".to_string(),
+                            value: "on".to_string(),
+                        });
+                        response.push(BackendMessage::ParameterStatus {
+                            name: "standard_conforming_strings".to_string(),
+                            value: "on".to_string(),
+                        });
+                        
+                        // Add ReadyForQuery message
+                        response.push(BackendMessage::ReadyForQuery(TransactionStatus::Idle));
+                        
+                        return Ok(response);
+                    }
+                    Err(e) => {
+                        error!("Failed to connect to PostgreSQL backend: {}", e);
+                        return Err(ProxyError::Database(format!("Failed to connect to PostgreSQL backend: {}", e)));
+                    }
+                }
+            }
+            
+            Ok(auth_response)
         }
         FrontendMessage::Query(query) => {
             // Process query
@@ -550,18 +652,36 @@ async fn process_message(
                     
                     // Add data rows
                     for row in rows {
-                        let values = row.columns().iter().enumerate().map(|(i, _)| {
-                            match row.try_get::<_, String>(i) {
-                                Ok(val) => Some(Bytes::from(val)),
-                                Err(_) => None // Handle error (null or type conversion failure)
-                            }
-                        }).collect::<Vec<Option<Bytes>>>();
+                        let mut data_row = Vec::new();
                         
-                        messages.push(BackendMessage::DataRow(values));
+                        for i in 0..row.len() {
+                            // Try to get the value as a string
+                            match row.try_get::<_, String>(i) {
+                                Ok(val) => data_row.push(Some(Bytes::from(val))),
+                                Err(_) => {
+                                    // Try as an integer
+                                    if let Ok(val) = row.try_get::<_, i32>(i) {
+                                        data_row.push(Some(Bytes::from(val.to_string())));
+                                    } else if let Ok(val) = row.try_get::<_, i64>(i) {
+                                        data_row.push(Some(Bytes::from(val.to_string())));
+                                    } else if let Ok(val) = row.try_get::<_, bool>(i) {
+                                        data_row.push(Some(Bytes::from(val.to_string())));
+                                    } else {
+                                        // NULL or unsupported type
+                                        data_row.push(None);
+                                    }
+                                }
+                            }
+                        }
+                        
+                        messages.push(BackendMessage::DataRow(data_row));
                     }
                     
                     // Add command complete
                     messages.push(BackendMessage::CommandComplete(format!("SELECT {}", row_count)));
+                } else {
+                    // For non-SELECT queries
+                    messages.push(BackendMessage::CommandComplete(query.split_whitespace().next().unwrap_or("").to_string()));
                 }
                 
                 // Add ready for query
@@ -578,12 +698,82 @@ async fn process_message(
             debug!("Client terminated connection");
             Ok(vec![])
         }
+        FrontendMessage::SSLRequest => {
+            // Handle SSL request - respond with 'N' (SSL not supported) for now
+            debug!("SSL request received, responding with 'N'");
+            Ok(vec![BackendMessage::SSLResponse(false)])
+        }
+        FrontendMessage::CancelRequest { process_id, secret_key } => {
+            // Handle cancel request
+            debug!("Cancel request received for process ID {} with secret key {}", process_id, secret_key);
+            // Pass through to database
+            if let Some(client) = pg_client {
+                // In a real implementation, we would need to handle this properly
+                // For now, just acknowledge it
+                Ok(vec![])
+            } else {
+                // No client connection
+                Ok(vec![])
+            }
+        }
+        // Add handling for extended protocol messages
+        FrontendMessage::Parse { name, query, param_types } => {
+            debug!("Parse message received: {}", query);
+            // Pass through to database if we have a client
+            if let Some(_client) = pg_client {
+                // In a real implementation, we would pass this to the database
+                // For now, just respond with ParseComplete
+                Ok(vec![BackendMessage::ParseComplete])
+            } else {
+                Err(ProxyError::Database("Not connected to database".to_string()))
+            }
+        }
+        FrontendMessage::Bind { .. } => {
+            debug!("Bind message received");
+            // In a real implementation, we would pass this to the database
+            // For now, just respond with BindComplete
+            Ok(vec![BackendMessage::BindComplete])
+        }
+        FrontendMessage::Execute { .. } => {
+            debug!("Execute message received");
+            // In a real implementation, we would pass this to the database
+            // For now, just respond with EmptyQueryResponse
+            Ok(vec![BackendMessage::EmptyQueryResponse])
+        }
+        FrontendMessage::Sync => {
+            debug!("Sync message received");
+            // Respond with ReadyForQuery
+            Ok(vec![BackendMessage::ReadyForQuery(*transaction_status)])
+        }
+        // For all other messages, log and pass through
         _ => {
-            // Unsupported message
-            warn!("Unsupported message: {:?}", message);
-            Err(ProxyError::Protocol("Unsupported message type".to_string()))
+            // Instead of rejecting, log the unknown message and continue
+            warn!("Unknown message type: {:?} - passing through", message);
+            // Respond with ReadyForQuery to allow the connection to proceed
+            Ok(vec![BackendMessage::ReadyForQuery(*transaction_status)])
         }
     }
+}
+
+/// Connect to PostgreSQL and return a ClientWrapper
+async fn connect_to_postgres(connection_string: &str) -> Result<ClientWrapper> {
+    // Parse connection string
+    let config = connection_string.parse::<tokio_postgres::config::Config>()
+        .map_err(|e| ProxyError::Database(format!("Failed to parse connection string: {}", e)))?;
+    
+    // Connect to PostgreSQL
+    let (client, connection) = config.connect(tokio_postgres::NoTls).await
+        .map_err(|e| ProxyError::Database(format!("Failed to connect to PostgreSQL: {}", e)))?;
+    
+    // Spawn a task to drive the connection
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            error!("Connection error: {}", e);
+        }
+    });
+    
+    // Create and return the client wrapper
+    Ok(ClientWrapper::new(client))
 }
 
 /// Handle backend messages

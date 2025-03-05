@@ -183,6 +183,9 @@ pub enum BackendMessage {
     /// Function call response
     FunctionCallResponse(Option<Bytes>),
     
+    /// SSL response (single byte 'S' for SSL allowed, 'N' for SSL not allowed)
+    SSLResponse(bool),
+    
     /// Negotiation response
     NegotiateProtocolVersion {
         /// Latest minor protocol version supported by the server
@@ -223,9 +226,6 @@ pub enum BackendMessage {
     
     /// Copy fail
     CopyFail(String),
-    
-    /// SSL response
-    SSLResponse(bool),
     
     /// Unknown message type
     Unknown {

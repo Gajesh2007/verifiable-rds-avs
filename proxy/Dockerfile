@@ -1,9 +1,16 @@
-FROM rust:1.78-slim as builder
+FROM rust:1.82-slim as builder
 
 WORKDIR /usr/src
+
+# Install pkg-config and OpenSSL development libraries
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY core ./core
 COPY proxy/Cargo.toml proxy/Cargo.lock ./proxy/
 COPY proxy/src ./proxy/src
+COPY contracts ./contracts
 
 WORKDIR /usr/src/proxy
 
@@ -24,6 +31,7 @@ RUN apt-get update && \
 
 WORKDIR /app
 COPY --from=builder /usr/src/proxy/target/release/verifiable-db-proxy /app/
+COPY --from=builder /usr/src/contracts /app/contracts
 
 EXPOSE 5432
 

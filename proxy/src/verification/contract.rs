@@ -23,7 +23,7 @@ use std::sync::Arc as StdArc;
 // Generate contract bindings
 abigen!(
     VerifiableDBAvs,
-    "./contracts/out/VerifiableDBAvs.sol/VerifiableDBAvs.json",
+    "/Users/gaj/Documents/Fun/verifiable-rds-avs/contracts/out/VerifiableDBAvs.sol/VerifiableDBAvs.json",
     event_derives(serde::Deserialize, serde::Serialize)
 );
 

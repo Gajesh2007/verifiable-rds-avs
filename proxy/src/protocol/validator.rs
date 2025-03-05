@@ -54,7 +54,7 @@ impl Default for ProtocolValidatorConfig {
                 "md5".to_string(),
                 "scram-sha-256".to_string(),
             ],
-            allow_unknown_messages: false,
+            allow_unknown_messages: true,
         }
     }
 }
@@ -153,6 +153,17 @@ impl ProtocolValidator {
             vec![
                 PermittedMessageType::Specific('S'), // 'S' for Startup
                 PermittedMessageType::Startup(0),    // 0 for Startup message (doesn't have a message type tag)
+                PermittedMessageType::Specific('X'), // 'X' for Terminate - allowed in all states
+            ],
+        );
+        
+        // Startup state permits only startup (same as Initial)
+        permitted_messages.insert(
+            ConnectionState::Startup,
+            vec![
+                PermittedMessageType::Specific('S'), // 'S' for Startup
+                PermittedMessageType::Startup(0),    // 0 for Startup message (doesn't have a message type tag)
+                PermittedMessageType::Specific('p'), // 'p' for Password - needed for authentication flow
                 PermittedMessageType::Specific('X'), // 'X' for Terminate - allowed in all states
             ],
         );

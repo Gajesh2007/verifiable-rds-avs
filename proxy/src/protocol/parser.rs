@@ -794,12 +794,12 @@ impl MessageParser {
             }
             
             // SSL response
-            b'S' => {
-                // Only one byte
-                let supports_ssl = true;
-                
-                Ok(BackendMessage::SSLResponse(supports_ssl))
-            }
+            // b'S' => {
+            //     // Only one byte
+            //     let supports_ssl = true;
+            //     
+            //     Ok(BackendMessage::SSLResponse(supports_ssl))
+            // }
             
             // Unknown message type
             _ => {

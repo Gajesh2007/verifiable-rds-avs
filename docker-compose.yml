@@ -30,9 +30,13 @@ services:
       PG_DATABASE: verifiable_db
       VERIFICATION_ENABLED: "true"
       RATE_LIMIT: "1000"
+    volumes:
+      - ./contracts:/app/contracts
     depends_on:
       postgres:
         condition: service_healthy
+      anvil:
+        condition: service_started
     restart: unless-stopped
 
   verification:
@@ -48,10 +52,14 @@ services:
       PG_PASSWORD: verifiable
       PG_DATABASE: verifiable_db
       API_PORT: 8080
+    volumes:
+      - ./contracts:/app/contracts
     depends_on:
       postgres:
         condition: service_healthy
       proxy:
+        condition: service_started
+      anvil:
         condition: service_started
     restart: unless-stopped
 
