@@ -107,3 +107,5 @@ yarn-debug.log*
 yarn-error.log* 
 
 AmazonRDSVerifiableDatabaseAVSSpec.md
+
+target/
