@@ -10,39 +10,43 @@ use tokio::signal::unix::{signal, SignalKind};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Config file path
-    #[arg(short, long, value_parser)]
+    #[arg(short = 'c', long)]
     config: Option<String>,
 
     /// PostgreSQL host
-    #[arg(short = 'H', long, value_parser)]
+    #[arg(short = 'H', long)]
     pg_host: Option<String>,
 
     /// PostgreSQL port
-    #[arg(short = 'P', long, value_parser)]
+    #[arg(short = 'P', long)]
     pg_port: Option<u16>,
 
     /// PostgreSQL user
-    #[arg(short = 'u', long, value_parser)]
+    #[arg(short = 'u', long)]
     pg_user: Option<String>,
 
     /// PostgreSQL password
-    #[arg(short = 'w', long, value_parser)]
+    #[arg(short = 'w', long)]
     pg_password: Option<String>,
 
     /// PostgreSQL database
-    #[arg(short = 'd', long, value_parser)]
+    #[arg(short = 'd', long)]
     pg_database: Option<String>,
 
     /// Proxy port
-    #[arg(short, long, value_parser)]
+    #[arg(short = 'p', long)]
     port: Option<u16>,
 
     /// Enable or disable verification
-    #[arg(short, long, value_parser)]
+    #[arg(short = 'v', long)]
     verification_enabled: Option<bool>,
 
+    /// Verification service URL
+    #[arg(short = 's', long)]
+    verification_service_url: Option<String>,
+
     /// Rate limit
-    #[arg(short, long, value_parser)]
+    #[arg(short = 'r', long)]
     rate_limit: Option<u32>,
 }
 
@@ -132,6 +136,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(verification_enabled) = args.verification_enabled {
         // Enable/disable verification
         config.verification_config.enabled = verification_enabled;
+    }
+    
+    if let Some(verification_service_url) = args.verification_service_url {
+        // Set verification service URL
+        config.verification_config.verification_service_url = Some(verification_service_url);
     }
     
     if let Some(rate_limit) = args.rate_limit {

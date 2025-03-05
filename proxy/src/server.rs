@@ -33,8 +33,8 @@ impl ProxyServer {
         // Create rate limiter
         let rate_limiter_config = RateLimiterConfig {
             enabled: config.rate_limiter_config.enabled,
-            rate_limit: config.rate_limit,
-            allow_list: Vec::new(),
+            rate_limit: config.rate_limiter_config.rate_limit,
+            allow_list: vec!["127.0.0.1".parse().unwrap()],
             block_list: Vec::new(),
         };
         

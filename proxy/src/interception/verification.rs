@@ -6,14 +6,21 @@ use crate::verification::environment::{VerificationEnvironment, VerificationEnvi
 use crate::verification::contract::{ContractManager, ContractConfig, StateCommitment, Challenge};
 use crate::verification::state::{StateCaptureManager, RowId, DatabaseState as StateDBState};
 use crate::transaction::{TransactionManager, TransactionStatus};
+use crate::verification::{
+    client::VerificationServiceClient
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use log::{debug, info, warn, error};
 use serde::{Serialize, Deserialize};
 use tokio::sync::Mutex as TokioMutex;
 use sha2::{Sha256, Digest, digest::FixedOutput, digest::Update};
 use uuid::Uuid;
+use tokio_postgres::{Client, Config, NoTls};
+use crate::config::ProxyConfig;
+use hex;
+use serde_json;
 
 /// Verification status of a transaction
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +179,9 @@ pub struct VerificationConfig {
     
     /// Configuration for contract integration
     pub contract: ContractConfig,
+    
+    /// URL of the verification service
+    pub verification_service_url: Option<String>,
 }
 
 /// Configuration for state capture
@@ -197,6 +207,7 @@ impl Default for VerificationConfig {
             state_capture: VerificationStateConfig::default(),
             environment: VerificationEnvironmentConfig::default(),
             contract: ContractConfig::default(),
+            verification_service_url: None,
         }
     }
 }
@@ -233,34 +244,52 @@ pub struct VerificationManager {
     
     /// Transaction manager for transaction boundary protection
     transaction_manager: Arc<Mutex<TransactionManager>>,
+    
+    /// Verification service client
+    verification_service: Option<VerificationServiceClient>,
+    
+    /// Database connection string for transaction storage
+    db_config: String,
 }
 
 impl VerificationManager {
     /// Create a new verification manager with the given configuration
     pub async fn new(config: VerificationConfig) -> Result<Self> {
-        // Initialize an empty database state
-        let current_state = RwLock::new(DatabaseState::new());
-        
-        // Create a state capture manager
+        // Create state capture manager
         let state_capture = Arc::new(StateCaptureManager::new());
         
-        // Create the verification environment
-        let verification_env = Arc::new(VerificationEnvironment::new(
-            config.environment.clone(),
-            state_capture.clone(),
-        ));
+        // Create verification environment
+        let verification_env = Arc::new(VerificationEnvironment::new(config.environment.clone(), state_capture.clone()));
         
-        // Initialize contract manager
-        let contract = Arc::new(ContractManager::new(
-            config.contract.clone()
-        ));
-        contract.initialize().await?;
+        // Create contract manager
+        let contract = Arc::new(ContractManager::new(config.contract.clone()));
         
-        // Initialize transaction manager
+        // Create transaction manager
         let transaction_manager = Arc::new(Mutex::new(TransactionManager::new()));
         
-        Ok(Self {
-            current_state,
+        // Create verification service client if URL is provided
+        let verification_service = if let Some(url) = &config.verification_service_url {
+            debug!("Creating verification service client with URL: {}", url);
+            Some(VerificationServiceClient::new(url))
+        } else {
+            None
+        };
+        
+        // Create database connection string
+        let host = "localhost";
+        let port = 5432;
+        let username = "verifiable";
+        let password = "verifiable";
+        let database = "verifiable_db";
+        
+        // Create connection string
+        let db_config = format!(
+            "host={} port={} user={} password={} dbname={}",
+            host, port, username, password, database
+        );
+        
+        let manager = Self {
+            current_state: RwLock::new(DatabaseState::new()),
             transaction_records: Mutex::new(Vec::new()),
             config,
             transaction_counter: Mutex::new(0),
@@ -270,7 +299,14 @@ impl VerificationManager {
             verification_env,
             contract,
             transaction_manager,
-        })
+            verification_service,
+            db_config,
+        };
+        
+        // Initialize the manager
+        manager.initialize().await?;
+        
+        Ok(manager)
     }
     
     /// Initialize the verification manager
@@ -288,6 +324,25 @@ impl VerificationManager {
         Ok(())
     }
     
+    /// Get a PostgreSQL client for the main database
+    async fn get_database_client(&self) -> Result<Client> {
+        debug!("Connecting to PostgreSQL to save verification data using connection string");
+        
+        // Connect to PostgreSQL
+        let (client, connection) = tokio_postgres::connect(&self.db_config, NoTls).await
+            .map_err(|e| ProxyError::Database(format!("Failed to connect to PostgreSQL: {}", e)))?;
+        
+        // The connection object performs the actual communication with the database,
+        // so spawn it off to run on its own
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                error!("Database connection error: {}", e);
+            }
+        });
+        
+        Ok(client)
+    }
+
     /// Begin a transaction for verification
     pub fn begin_transaction(&self, query: &str, metadata: &QueryMetadata) -> Result<u64> {
         if !self.config.enabled {
@@ -345,7 +400,7 @@ impl VerificationManager {
         // Add to transaction records
         {
             let mut records = self.transaction_records.lock().unwrap();
-            records.push(transaction);
+            records.push(transaction.clone());
             
             // Trim records if exceeding max history
             if records.len() > self.config.max_history {
@@ -369,6 +424,92 @@ impl VerificationManager {
             // Store the mapping between verification transaction ID and boundary transaction ID
             // This could be done in a separate field in the VerificationManager
         }
+        
+        // Clone necessary data for the async operation
+        let transaction_clone = transaction.clone();
+        let config_enabled = self.config.enabled;
+        let db_config = self.db_config.clone();
+        
+        // Save transaction to database asynchronously
+        tokio::spawn(async move {
+            if !config_enabled {
+                return;
+            }
+            
+            // Create a database client
+            let db_client_result = tokio_postgres::connect(&db_config, NoTls).await;
+            
+            match db_client_result {
+                Ok((client, connection)) => {
+                    // Spawn the connection
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            error!("Database connection error: {}", e);
+                        }
+                    });
+                    
+                    // Convert pre_state_root and post_state_root to hex strings
+                    let pre_state_root = transaction_clone.pre_state_root
+                        .map(|root| hex::encode(root))
+                        .unwrap_or_else(|| "".to_string());
+                        
+                    let post_state_root = transaction_clone.post_state_root
+                        .map(|root| hex::encode(root))
+                        .unwrap_or_else(|| "".to_string());
+                        
+                    // Convert verification_status to string
+                    let status_str = match transaction_clone.verification_status {
+                        VerificationStatus::NotVerified => "not_verified",
+                        VerificationStatus::InProgress => "in_progress",
+                        VerificationStatus::Verified => "verified",
+                        VerificationStatus::Failed => "failed",
+                        VerificationStatus::Skipped => "skipped",
+                    };
+                    
+                    // Convert modified_tables to JSON array
+                    let modified_tables_json = serde_json::to_string(&transaction_clone.modified_tables)
+                        .unwrap_or_else(|_| "[]".to_string());
+                        
+                    // Convert query_type to string
+                    let query_type = format!("{:?}", transaction_clone.metadata.query_type);
+                    
+                    // Insert transaction record
+                    let result = client
+                        .execute(
+                            "INSERT INTO verification_transactions (
+                                transaction_id, query, query_type, pre_state_root, post_state_root, 
+                                timestamp, modified_tables, verification_status, error_message
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            ON CONFLICT (transaction_id) 
+                            DO UPDATE SET 
+                                post_state_root = EXCLUDED.post_state_root,
+                                verification_status = EXCLUDED.verification_status,
+                                error_message = EXCLUDED.error_message",
+                            &[
+                                &(transaction_clone.id as i64),
+                                &transaction_clone.query,
+                                &query_type,
+                                &pre_state_root,
+                                &post_state_root,
+                                &(transaction_clone.timestamp as i64),
+                                &modified_tables_json,
+                                &status_str,
+                                &transaction_clone.error,
+                            ],
+                        )
+                        .await;
+                        
+                    if let Err(e) = result {
+                        error!("Failed to save transaction to database: {}", e);
+                    } else {
+                        debug!("Successfully saved transaction {} to database", transaction_clone.id);
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to connect to database: {}", e);
+                }
+            }
+        });
         
         Ok(transaction_id)
     }
@@ -398,7 +539,7 @@ impl VerificationManager {
         };
         
         // If transaction not found, return error
-        let transaction = match transaction {
+        let mut transaction = match transaction {
             Some(tx) => tx,
             None => {
                 return Err(ProxyError::Verification(format!("Transaction {} not found", transaction_id)));
@@ -435,6 +576,7 @@ impl VerificationManager {
             if let Some(record) = records.iter_mut().find(|r| r.id == transaction_id) {
                 record.verification_status = status.clone();
                 record.error = error_message.clone();
+                transaction = record.clone();
             }
         }
         
@@ -447,12 +589,125 @@ impl VerificationManager {
         // Check if we need to commit state
         self.check_commit_state();
         
+        // Update post-state root with current state root
+        let post_state_root = {
+            let state = self.current_state.read().unwrap();
+            Some(state.root)
+        };
+        transaction.post_state_root = post_state_root;
+        
+        // Update the transaction record with post state
+        {
+            let mut records = self.transaction_records.lock().unwrap();
+            if let Some(record) = records.iter_mut().find(|r| r.id == transaction_id) {
+                record.post_state_root = post_state_root;
+            }
+        }
+        
+        // Save updated transaction to database
+        let transaction_clone = transaction.clone();
+        let config_enabled = self.config.enabled;
+        let db_config = self.db_config.clone();
+        
+        // Save transaction to database asynchronously
+        tokio::spawn(async move {
+            if !config_enabled {
+                return;
+            }
+            
+            // Create a database client
+            let db_client_result = tokio_postgres::connect(&db_config, NoTls).await;
+            
+            match db_client_result {
+                Ok((client, connection)) => {
+                    // Spawn the connection
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            error!("Database connection error: {}", e);
+                        }
+                    });
+                    
+                    // Convert pre_state_root and post_state_root to hex strings
+                    let pre_state_root = transaction_clone.pre_state_root
+                        .map(|root| hex::encode(root))
+                        .unwrap_or_else(|| "".to_string());
+                        
+                    let post_state_root = transaction_clone.post_state_root
+                        .map(|root| hex::encode(root))
+                        .unwrap_or_else(|| "".to_string());
+                        
+                    // Convert verification_status to string
+                    let status_str = match transaction_clone.verification_status {
+                        VerificationStatus::NotVerified => "not_verified",
+                        VerificationStatus::InProgress => "in_progress",
+                        VerificationStatus::Verified => "verified",
+                        VerificationStatus::Failed => "failed",
+                        VerificationStatus::Skipped => "skipped",
+                    };
+                    
+                    // Convert modified_tables to JSON array
+                    let modified_tables_json = serde_json::to_string(&transaction_clone.modified_tables)
+                        .unwrap_or_else(|_| "[]".to_string());
+                        
+                    // Convert query_type to string
+                    let query_type = format!("{:?}", transaction_clone.metadata.query_type);
+                    
+                    // Insert transaction record
+                    let result = client
+                        .execute(
+                            "INSERT INTO verification_transactions (
+                                transaction_id, query, query_type, pre_state_root, post_state_root, 
+                                timestamp, modified_tables, verification_status, error_message
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            ON CONFLICT (transaction_id) 
+                            DO UPDATE SET 
+                                post_state_root = EXCLUDED.post_state_root,
+                                verification_status = EXCLUDED.verification_status,
+                                error_message = EXCLUDED.error_message",
+                            &[
+                                &(transaction_clone.id as i64),
+                                &transaction_clone.query,
+                                &query_type,
+                                &pre_state_root,
+                                &post_state_root,
+                                &(transaction_clone.timestamp as i64),
+                                &modified_tables_json,
+                                &status_str,
+                                &transaction_clone.error,
+                            ],
+                        )
+                        .await;
+                        
+                    if let Err(e) = result {
+                        error!("Failed to save transaction to database: {}", e);
+                    } else {
+                        debug!("Successfully saved transaction {} to database", transaction_clone.id);
+                    }
+                },
+                Err(e) => {
+                    error!("Failed to connect to database: {}", e);
+                }
+            }
+        });
+        
+        // If verification service is configured, send the transaction for verification
+        if let Some(verification_service) = &self.verification_service {
+            if let Some(pre_state_root) = transaction.pre_state_root {
+                debug!("Sending transaction {} to verification service", transaction_id);
+                if let Err(e) = verification_service.verify_transaction(transaction_id, &transaction.query, &pre_state_root).await {
+                    warn!("Failed to send transaction to verification service: {}", e);
+                    // Don't fail the transaction if the verification service is unavailable
+                    // Just log the error and continue
+                }
+            }
+        }
+        
         // Return verification result
         Ok(VerificationResult {
             transaction_id,
             status,
             pre_state_root: transaction.pre_state_root,
-            post_state_root: transaction.post_state_root,
+            post_state_root,
             verification_time_ms: verification_time,
             error: error_message,
             metadata: HashMap::new(),

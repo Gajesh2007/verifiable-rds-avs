@@ -23,6 +23,10 @@ pub use contract::{ContractManager, ContractConfig, StateCommitment, Challenge, 
 pub mod deterministic;
 pub use deterministic::{DeterministicTimestamp, DeterministicRandom, DeterministicSqlFunctions};
 
+// Export the verification service client
+pub mod client;
+pub use client::VerificationServiceClient;
+
 // Space for additional verification components
 // These will be implemented in future PRs:
 // - Merkle trie for efficient key-value storage

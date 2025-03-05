@@ -15,25 +15,25 @@ postgres-protocol = "0.6.6"
 postgres-types = "0.2.6"
 
 # Async runtime and networking
-tokio = { version = "1.35.1", features = ["full"] }
+tokio = { version = "1.36.0", features = ["full"] }
 tokio-util = { version = "0.7.10", features = ["codec"] }
 tokio-postgres = { version = "0.7.10", features = ["with-serde_json-1", "with-uuid-1"] }
 
 # Error handling
-thiserror = "1.0.56"
+thiserror = "1.0.57"
 anyhow = "1.0.79"
 
 # Utilities
 log = "0.4.20"
-env_logger = "0.11.0"
-clap = { version = "4.4.13", features = ["derive"] }
+env_logger = "0.11.1"
+clap = { version = "4.4.18", features = ["derive"] }
 config = "0.13.4"
 dotenvy = "0.15.7"
 metrics = "0.21.1"
 metrics-exporter-prometheus = "0.12.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-regex = "1.10.2"
+regex = "1.10.3"
 
 # Security features
 governor = "0.6.0"
@@ -45,7 +45,7 @@ sqlparser = "0.43.1"
 sha2 = "0.10.8"
 merkle_light = "0.4.0"
 getrandom = "0.2.12"
-uuid = { version = "1.6.1", features = ["v4"] }
+uuid = { version = "1.7.0", features = ["v4", "serde"] }
 rand = "0.8.5"
 ed25519-dalek = "2.1.0"
 hex = "0.4.3"
@@ -54,13 +54,16 @@ base64 = "0.21.7"
 md5 = "0.7.0"
 
 # Ethereum interaction
-ethers = { version = "2.0.11", features = ["abigen", "ws", "rustls"] }
+ethers = { version = "2.0.11", features = ["legacy"] }
 
 # EigenLayer SDK
 eigensdk = { version = "0.3.0", features = ["full"] }
 
-serde = { version = "1.0.193", features = ["derive"] }
-serde_json = "1.0.111"
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+
+# HTTP client functionality
+reqwest = { version = "0.11.24", features = ["json"] }
 
 # For testing
 [dev-dependencies]
