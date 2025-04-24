@@ -46,6 +46,7 @@ chrono = "0.4.31"
 
 # Testing
 [dev-dependencies]
+verifiable-db-core = { path = "../core" }
 mockall = "0.12.1"
 rstest = "0.18.2"
 tempfile = "3.8.1"

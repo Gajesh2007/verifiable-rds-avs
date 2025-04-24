@@ -9,7 +9,6 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 
 use super::ddl::DdlStatement;
-use crate::models::{ColumnDefinition, ColumnType};
 
 /// Direction of a schema migration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,7 +136,6 @@ impl SchemaMigration {
 mod tests {
     use super::*;
     use super::super::ddl::{DdlOperation, ColumnDefinitionDdl, TableDefinition};
-    use crate::models::{ColumnDefinition, ColumnType};
     
     #[test]
     fn test_migration_creation() {

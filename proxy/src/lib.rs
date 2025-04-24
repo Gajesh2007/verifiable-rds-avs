@@ -32,6 +32,9 @@ pub mod verification;
 // Transaction processing
 pub mod transaction;
 
+// WAL listener
+pub mod wal_listener;
+
 // Test utilities
 #[cfg(test)]
 pub mod test_utils {

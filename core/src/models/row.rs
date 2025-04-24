@@ -45,36 +45,17 @@ pub enum ValueType {
 }
 
 /// Value in a row
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub enum Value {
-    /// Integer (32-bit)
     Integer(i32),
-    
-    /// Big integer (64-bit)
     BigInt(i64),
-    
-    /// Floating point (64-bit)
     Float(f64),
-    
-    /// Text string
     Text(String),
-    
-    /// Binary data
     Binary(Vec<u8>),
-    
-    /// Boolean
     Boolean(bool),
-    
-    /// UUID
     Uuid(Uuid),
-    
-    /// Timestamp (as milliseconds since Unix epoch)
     Timestamp(i64),
-    
-    /// JSON data
     Json(String),
-    
-    /// Null value
     Null,
 }
 
@@ -112,33 +93,6 @@ impl Debug for Value {
         }
     }
 }
-
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Value::Integer(a), Value::Integer(b)) => a == b,
-            (Value::BigInt(a), Value::BigInt(b)) => a == b,
-            (Value::Float(a), Value::Float(b)) => {
-                // Special handling for NaN
-                if a.is_nan() && b.is_nan() {
-                    true
-                } else {
-                    a == b
-                }
-            }
-            (Value::Text(a), Value::Text(b)) => a == b,
-            (Value::Binary(a), Value::Binary(b)) => a == b,
-            (Value::Boolean(a), Value::Boolean(b)) => a == b,
-            (Value::Uuid(a), Value::Uuid(b)) => a == b,
-            (Value::Timestamp(a), Value::Timestamp(b)) => a == b,
-            (Value::Json(a), Value::Json(b)) => a == b,
-            (Value::Null, Value::Null) => true,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Value {}
 
 impl Value {
     /// Get the type of the value

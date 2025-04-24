@@ -132,6 +132,21 @@ impl QueryClient {
         let result = client.query(query, &[])?;
         let execution_time = start.elapsed();
         
+        // Get transaction ID by executing a special query
+        // This query would normally be implemented in the proxy to return the transaction ID
+        // of the most recently executed statement
+        let transaction_id_result = match client.query_one("SELECT _verifiable_db_last_transaction_id()", &[]) {
+            Ok(row) => {
+                // Extract the transaction ID from the result
+                let transaction_id: Option<i64> = row.get(0);
+                transaction_id.map(|id| id as u64)
+            },
+            Err(_) => {
+                // If the function doesn't exist (development/testing), return None
+                None
+            }
+        };
+        
         // Convert rows to maps
         let rows = result.iter()
             .map(|row| row_to_map(row))
@@ -142,21 +157,15 @@ impl QueryClient {
             rows,
             row_count: result.len() as i64,
             execution_time_ms: execution_time.as_millis() as u64,
-            transaction_id: None,
+            transaction_id: transaction_id_result,
             verified: false,
             verification_result: None,
         };
         
         // Verify if requested and verification client is available
         if self.verify_queries && self.verification_client.is_some() {
-            // In a real implementation, we would extract the transaction ID
-            // from the response headers or a special query
-            // For now, we'll assume transaction ID 0
-            let transaction_id = 0;
-            
-            if transaction_id > 0 {
-                query_result.transaction_id = Some(transaction_id);
-                
+            // Use the transaction ID if available
+            if let Some(transaction_id) = query_result.transaction_id {
                 // Verify the transaction
                 if let Some(verification_client) = &self.verification_client {
                     match verification_client.verify_transaction(transaction_id).await {
@@ -374,4 +383,4 @@ fn row_to_map(row: &Row) -> HashMap<String, serde_json::Value> {
     }
     
     map
-} 
+}

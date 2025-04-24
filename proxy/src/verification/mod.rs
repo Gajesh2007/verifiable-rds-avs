@@ -9,7 +9,7 @@ pub use merkle::{MerkleTree, SparseMerkleTree, MerkleProof, MerkleLeaf, ProofNod
 
 // Export the state capture module
 pub mod state;
-pub use state::{StateCaptureManager, TableState, DatabaseState, TableSchema, RowId, Row, Value};
+pub use state::{StateCaptureManager, TableState, DatabaseState, TableSchema, Row, Value, CoreDatabaseState as BlockState};
 
 // Export the verification environment module
 pub mod environment;
@@ -19,7 +19,7 @@ pub use environment::{VerificationEnvironment, VerificationEnvironmentConfig, Ve
 pub mod contract;
 pub use contract::{ContractManager, ContractConfig, StateCommitment, Challenge, ChallengeStatus};
 
-// Add the following line:
+// Export the deterministic module
 pub mod deterministic;
 pub use deterministic::{DeterministicTimestamp, DeterministicRandom, DeterministicSqlFunctions};
 
@@ -58,4 +58,4 @@ pub trait Verifiable {
     
     /// Verify a proof for a specific key
     fn verify_proof(&self, key: &str, proof: &[u8]) -> crate::error::Result<bool>;
-} 
+}

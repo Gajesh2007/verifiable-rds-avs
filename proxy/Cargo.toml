@@ -17,7 +17,8 @@ postgres-types = "0.2.6"
 # Async runtime and networking
 tokio = { version = "1.36.0", features = ["full"] }
 tokio-util = { version = "0.7.10", features = ["codec"] }
-tokio-postgres = { version = "0.7.10", features = ["with-serde_json-1", "with-uuid-1"] }
+
+deadpool-postgres = "0.12.1"
 
 # Error handling
 thiserror = "1.0.57"
@@ -34,12 +35,18 @@ metrics-exporter-prometheus = "0.12.1"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 regex = "1.10.3"
+chrono = { version = "0.4", features = ["serde"] }
 
 # Security features
 governor = "0.6.0"
 ipnet = "2.9.0"
 rusqlite = { version = "0.30.0", features = ["bundled"] }
-sqlparser = "0.43.1"
+sqlparser = "0.45.0"
+tokio-postgres = { version = "0.7.10", features = ["with-uuid-1", "with-serde_json-1"] }
+# Replace logical replication dependency with pg_replicate git dependency
+# pg_replicate = { git = "https://github.com/supabase/pg_replicate" } # Removed - Use tokio-postgres::copy_out instead
+
+futures-util = "0.3" # Added for stream utilities like TryStreamExt
 
 # Cryptography and verification
 sha2 = "0.10.8"
@@ -53,14 +60,16 @@ hmac = "0.12.1"
 base64 = "0.21.7"
 md5 = "0.7.0"
 
+# Serialization helpers
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+serde_bytes = "0.11"
+
 # Ethereum interaction
 ethers = { version = "2.0.11", features = ["legacy"] }
 
 # EigenLayer SDK
 eigensdk = { version = "0.3.0", features = ["full"] }
-
-serde = { version = "1.0.196", features = ["derive"] }
-serde_json = "1.0.113"
 
 # HTTP client functionality
 reqwest = { version = "0.11.24", features = ["json"] }
@@ -76,4 +85,4 @@ test-context = "0.1.4"
 
 [[bin]]
 name = "verifiable-db-proxy"
-path = "src/main.rs" 
+path = "src/main.rs"

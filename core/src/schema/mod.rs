@@ -15,7 +15,6 @@ use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
-use std::error::Error;
 
 use crate::crypto;
 use crate::models::TableSchema;

@@ -84,6 +84,12 @@ pub struct ProxyConfig {
     
     /// Database name
     pub db_name: Option<String>,
+    
+    // WAL Listener Configuration
+    /// Optional connection string for logical replication
+    pub replication_connection_string: Option<String>,
+    /// Optional logical replication slot name
+    pub replication_slot_name: Option<String>,
 }
 
 /// TLS configuration
@@ -128,6 +134,9 @@ impl Default for ProxyConfig {
             db_user: None,
             db_password: None,
             db_name: None,
+            // Default WAL listener config to None
+            replication_connection_string: None,
+            replication_slot_name: None,
         }
     }
 }

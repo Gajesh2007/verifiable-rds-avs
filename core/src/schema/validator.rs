@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
-use crate::models::{TableSchema, ColumnType, ColumnDefinition};
+use crate::models::{TableSchema, ColumnType}; // Removed unused ColumnDefinition
 use super::{SchemaMigration, DdlOperation, ColumnDefinitionDdl};
 
 /// Schema validation error
@@ -512,7 +512,7 @@ mod tests {
         
         let table_no_pk = TableSchema::new(
             "users".to_string(),
-            columns_no_pk.clone(),
+            columns_no_pk,
             vec![],
             vec![],
             vec![]
@@ -523,7 +523,7 @@ mod tests {
         // Invalid table - non-existent primary key column
         let table_bad_pk = TableSchema::new(
             "users".to_string(),
-            columns_no_pk.clone(),
+            columns_no_pk,
             vec!["non_existent".to_string()], // Non-existent column
             vec![],
             vec![]
@@ -553,7 +553,7 @@ mod tests {
         
         let table_nullable_pk = TableSchema::new(
             "users".to_string(),
-            columns_nullable_pk.clone(),
+            columns_nullable_pk,
             vec!["id".to_string()],
             vec![],
             vec![]
@@ -586,7 +586,7 @@ mod tests {
         
         let users_table = TableSchema::new(
             "users".to_string(),
-            users_columns.clone(),
+            users_columns,
             vec!["id".to_string()],
             vec![],
             vec![]
@@ -621,7 +621,7 @@ mod tests {
         
         let posts_table = TableSchema::new(
             "posts".to_string(),
-            posts_columns.clone(),
+            posts_columns,
             vec!["id".to_string()],
             vec![],
             vec![(
@@ -702,7 +702,7 @@ mod tests {
         
         let users_table = TableSchema::new(
             "users".to_string(),
-            users_columns.clone(),
+            users_columns,
             vec!["id".to_string()],
             vec![],
             vec![]
@@ -742,7 +742,7 @@ mod tests {
         let create_posts_table = DdlStatement {
             ddl: DdlOperation::CreateTable(TableDefinition {
                 name: "posts".to_string(),
-                columns: posts_columns.clone(),
+                columns: posts_columns,
                 primary_keys: vec!["id".to_string()],
                 unique_constraints: vec![],
                 foreign_keys: vec![(
@@ -773,7 +773,7 @@ mod tests {
         let create_users_table = DdlStatement {
             ddl: DdlOperation::CreateTable(TableDefinition {
                 name: "users".to_string(), // Already exists
-                columns: users_columns.clone(),
+                columns: users_columns,
                 primary_keys: vec!["id".to_string()],
                 unique_constraints: vec![],
                 foreign_keys: vec![],

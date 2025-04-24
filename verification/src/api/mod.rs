@@ -9,8 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
-use serde_json::Value;
-use crate::state::{DatabaseState, TableState};
+use verifiable_db_core::models::{
+    BlockState, 
+    BlockHeader, 
+    Challenge, ChallengeType, ChallengeStatus, 
+    TransactionRecord
+};
+use verifiable_db_core::merkle::SecureMerkleProof;
 
 /// Common response type that can be either data or an error
 #[derive(Debug, Serialize)]
@@ -20,13 +25,13 @@ enum ApiResponse<T> {
     Error { error: String }
 }
 
-/// The shared application state
+/// The shared application state using core::BlockState
 pub struct AppState {
-    /// Current database state
-    pub db_state: RwLock<Option<DatabaseState>>,
+    /// Current database state (latest block)
+    pub db_state: RwLock<Option<BlockState>>,
     
-    /// History of database states
-    pub state_history: RwLock<HashMap<u64, DatabaseState>>,
+    /// History of database states (blocks)
+    pub state_history: RwLock<HashMap<u64, BlockState>>,
 }
 
 /// Create a new API router with the specified state
@@ -41,13 +46,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Response for state root endpoint
+/// Response for state root endpoint - aligned with core::BlockHeader
 #[derive(Debug, Serialize)]
 struct StateRootResponse {
     block_number: u64,
-    state_root: String,
+    state_root: String, // hex encoded
     timestamp: u64,
-    version: u64,
 }
 
 /// Get the state root for a specific block
@@ -60,10 +64,9 @@ async fn get_state_root(
     let response = match state_history.get(&block_number) {
         Some(db_state) => {
             let data = StateRootResponse {
-                block_number,
-                state_root: hex::encode(db_state.merkle_root),
-                timestamp: db_state.timestamp,
-                version: db_state.version,
+                block_number: db_state.header.number, // Use core field name
+                state_root: hex::encode(db_state.header.state_root), // Use core field name
+                timestamp: db_state.header.timestamp, // Use core field name
             };
             
             (StatusCode::OK, Json(ApiResponse::Success(data)))
@@ -90,10 +93,9 @@ async fn get_latest_state_root(
     let response = match &*db_state {
         Some(db_state) => {
             let data = StateRootResponse {
-                block_number: db_state.version, // Use version as block number for simplicity
-                state_root: hex::encode(db_state.merkle_root),
-                timestamp: db_state.timestamp,
-                version: db_state.version,
+                block_number: db_state.header.number, // Use core field name
+                state_root: hex::encode(db_state.header.state_root), // Use core field name
+                timestamp: db_state.header.timestamp, // Use core field name
             };
             
             (StatusCode::OK, Json(ApiResponse::Success(data)))
@@ -111,17 +113,15 @@ async fn get_latest_state_root(
     response
 }
 
-/// Response for table state endpoint
+/// Response for table state endpoint - Simplified as BlockState only has roots
 #[derive(Debug, Serialize)]
 struct TableStateResponse {
     table_name: String,
-    schema: String,
-    merkle_root: String,
-    row_count: usize,
-    version: u64,
+    table_root: String, // hex encoded root hash
+    block_number: u64,
 }
 
-/// Get the state of a specific table
+/// Get the state (root hash) of a specific table at the latest block
 async fn get_table_state(
     State(state): State<Arc<AppState>>,
     Path(table_name): Path<String>,
@@ -130,14 +130,13 @@ async fn get_table_state(
     
     let response = match &*db_state {
         Some(db_state) => {
-            match db_state.tables.get(&table_name) {
-                Some(table_state) => {
+            // Access table_roots from core::BlockState
+            match db_state.table_roots.get(&table_name) {
+                Some(table_root) => {
                     let data = TableStateResponse {
-                        table_name: table_state.name.clone(),
-                        schema: table_state.schema.clone(),
-                        merkle_root: hex::encode(table_state.merkle_root),
-                        row_count: table_state.rows.len(),
-                        version: table_state.version,
+                        table_name: table_name.clone(),
+                        table_root: hex::encode(table_root),
+                        block_number: db_state.header.number,
                     };
                     
                     (StatusCode::OK, Json(ApiResponse::Success(data)))
@@ -171,13 +170,13 @@ struct RowProofQuery {
     block_number: Option<u64>,
 }
 
-/// Response for row proof endpoint
+/// Response for row proof endpoint - Aligned with core structures
 #[derive(Debug, Serialize)]
 struct RowProofResponse {
     table_name: String,
-    primary_key: String,
-    proof: String,
-    merkle_root: String,
+    primary_key: String, // Assuming primary key is still a string for identification
+    proof: SecureMerkleProof, // Use the core proof type
+    state_root: String, // hex encoded root of the overall state tree
     block_number: u64,
 }
 
@@ -187,10 +186,10 @@ async fn get_row_proof(
     Path((table_name, primary_key)): Path<(String, String)>,
     Query(params): Query<RowProofQuery>,
 ) -> impl IntoResponse {
-    // In a real implementation, this would generate a proper Merkle proof
-    // For this simplified version, we'll just return a placeholder
+    // Logic needs significant update to use core::BlockState and generate proofs
+    // Placeholder logic remains for now
     
-    let db_state = match params.block_number {
+    let maybe_db_state = match params.block_number {
         Some(block_number) => {
             let state_history = state.state_history.read().await;
             match state_history.get(&block_number) {
@@ -207,16 +206,19 @@ async fn get_row_proof(
         }
     };
     
-    let response = match db_state {
+    match maybe_db_state {
         Some(db_state) => {
+            // TODO: Implement actual proof generation using db_state.table_roots
+            // and potentially fetching TableState/Row data from another source or cache.
+            // This placeholder just uses the overall state root.
+            let proof = SecureMerkleProof::default(); // Placeholder proof
             let data = RowProofResponse {
                 table_name,
                 primary_key,
-                proof: "0x1234567890abcdef".to_string(), // Placeholder proof
-                merkle_root: hex::encode(db_state.merkle_root),
-                block_number: db_state.version,
+                proof, // Placeholder
+                state_root: hex::encode(db_state.header.state_root),
+                block_number: db_state.header.number,
             };
-            
             (StatusCode::OK, Json(ApiResponse::Success(data)))
         },
         None => {
@@ -227,31 +229,29 @@ async fn get_row_proof(
                 })
             )
         }
-    };
-    
-    response
+    }
 }
 
-/// Request for verifying a transaction
+/// Request for verifying a transaction - Update if it uses core types
 #[derive(Debug, Deserialize)]
 struct VerifyTransactionRequest {
-    transaction_id: u64,
-    query: String,
-    pre_state_root: String,
-    block_number: u64,
+    transaction_id: u64, // Assuming using u64 based on memo item #4
+    // Include other necessary fields like pre/post state roots, operations etc.
+    // These might need to align with core::TransactionRecord or core::Operation
+    pre_state_root: String, // hex encoded
+    post_state_root: String, // hex encoded
+    operations: Vec<String>, // Placeholder: Needs proper Operation type alignment
 }
 
-/// Response for transaction verification
+/// Response for transaction verification - Update if it uses core types
 #[derive(Debug, Serialize)]
 struct VerifyTransactionResponse {
     transaction_id: u64,
-    is_valid: bool,
-    calculated_state_root: String,
-    expected_state_root: String,
-    details: Option<String>,
+    verified: bool,
+    reason: Option<String>,
 }
 
-/// Verify a transaction
+// TODO: Update verify_transaction logic based on core types and actual verification flow
 async fn verify_transaction(
     State(state): State<Arc<AppState>>,
     AxumJson(request): AxumJson<VerifyTransactionRequest>,
@@ -265,34 +265,30 @@ async fn verify_transaction(
     // For this simplified version, we'll just return a placeholder response
     let response = VerifyTransactionResponse {
         transaction_id: request.transaction_id,
-        is_valid: true,
-        calculated_state_root: request.pre_state_root.clone(), // Placeholder
-        expected_state_root: request.pre_state_root,
-        details: Some("Transaction verified successfully".to_string()),
+        verified: true,
+        reason: Some("Transaction verified successfully".to_string()),
     };
     
     (StatusCode::OK, Json(response))
 }
 
-/// Request for submitting a challenge
+/// Request for submitting a challenge - Update if it uses core types
 #[derive(Debug, Deserialize)]
 struct ChallengeRequest {
+    challenge_type: String, // e.g., "StateTransition", "RowInclusion"
     block_number: u64,
-    transaction_id: u64,
-    evidence: String,
-    challenger_address: String,
+    details: serde_json::Value, // Using serde_json::Value for flexibility, might need refinement
+    // Potentially align with core::Challenge
 }
 
-/// Response for challenge submission
+/// Response for challenge submission - Update if it uses core types
 #[derive(Debug, Serialize)]
 struct ChallengeResponse {
-    challenge_id: u64,
-    status: String,
-    bond_amount: String,
-    details: String,
+    challenge_id: String, // Placeholder: Use ID from core::Challenge?
+    status: String, // e.g., "Submitted", "Failed"
 }
 
-/// Submit a challenge
+// TODO: Update submit_challenge logic based on core::Challenge and actual challenge flow
 async fn submit_challenge(
     State(state): State<Arc<AppState>>,
     AxumJson(request): AxumJson<ChallengeRequest>,
@@ -304,11 +300,9 @@ async fn submit_challenge(
     
     // For this simplified version, we'll just return a placeholder response
     let response = ChallengeResponse {
-        challenge_id: 12345, // Placeholder
+        challenge_id: "12345".to_string(), // Placeholder
         status: "pending".to_string(),
-        bond_amount: "1000000000000000000".to_string(), // 1 ETH in wei
-        details: "Challenge submitted successfully".to_string(),
     };
     
     (StatusCode::OK, Json(response))
-} 
+}

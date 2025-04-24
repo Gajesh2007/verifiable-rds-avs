@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use uuid::Uuid;
 
 use crate::crypto;
 use super::domains;
@@ -221,32 +220,32 @@ impl Operation {
 /// A transaction record
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TransactionRecord {
-    /// Transaction ID
-    pub id: Uuid,
+    /// Unique identifier for the transaction
+    pub id: u64,
     
-    /// Block number this transaction belongs to
+    /// Block number the transaction is included in
     pub block_number: u64,
     
-    /// Transaction type
+    /// Type of transaction
     pub transaction_type: TransactionType,
     
-    /// Start timestamp
+    /// Start time of the transaction
     pub start_time: DateTime<Utc>,
     
-    /// End timestamp
+    /// End time of the transaction
     pub end_time: DateTime<Utc>,
     
-    /// Operations in the transaction
+    /// List of operations in the transaction
     pub operations: Vec<Operation>,
     
-    /// State root before the transaction
+    /// Root hash of the database state before the transaction
     pub pre_state_root: [u8; 32],
     
-    /// State root after the transaction
+    /// Root hash of the database state after the transaction
     pub post_state_root: [u8; 32],
     
-    /// Savepoint tracking (nested transactions)
-    pub savepoints: HashMap<String, Vec<usize>>, // Savepoint name -> Operation indices
+    /// Map of savepoint names to operation indices
+    pub savepoints: HashMap<String, Vec<usize>>,
     
     /// PostgreSQL process ID
     pub postgres_pid: i32,
@@ -254,13 +253,13 @@ pub struct TransactionRecord {
     /// PostgreSQL transaction ID
     pub postgres_xid: u32,
     
-    /// Client information
+    /// Client information (user, application, etc.)
     pub client_info: Option<String>,
     
-    /// Transaction metadata (JSON serialized)
+    /// Additional metadata about the transaction
     pub metadata: Option<String>,
     
-    /// Transaction hash
+    /// Hash of the transaction for verification
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash: Option<[u8; 32]>,
 }
@@ -280,8 +279,9 @@ impl Debug for TransactionRecord {
 
 impl TransactionRecord {
     /// Create a new transaction record
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        id: Uuid,
+        id: u64,
         block_number: u64,
         transaction_type: TransactionType,
         start_time: DateTime<Utc>,
@@ -295,7 +295,7 @@ impl TransactionRecord {
         client_info: Option<String>,
         metadata: Option<String>,
     ) -> Self {
-        let mut tx = TransactionRecord {
+        let mut transaction = Self {
             id,
             block_number,
             transaction_type,
@@ -312,35 +312,21 @@ impl TransactionRecord {
             hash: None,
         };
         
-        // Calculate the hash
-        tx.hash = Some(tx.calculate_hash());
+        // Calculate and store the hash
+        let calculated_hash = transaction.calculate_hash();
+        transaction.hash = Some(calculated_hash);
         
-        tx
+        transaction
     }
     
     /// Calculate the hash of the transaction with domain separation
     pub fn calculate_hash(&self) -> [u8; 32] {
-        // Collect data for hashing
-        let id_bytes = self.id.as_bytes();
+        // Convert fields to bytes first to ensure they live long enough
+        let id_bytes = self.id.to_be_bytes();
         let block_bytes = self.block_number.to_be_bytes();
-        let transaction_type_bytes = [self.transaction_type as u8];
+        let type_byte = [self.transaction_type as u8];
         let start_time_bytes = self.start_time.timestamp_millis().to_be_bytes();
         let end_time_bytes = self.end_time.timestamp_millis().to_be_bytes();
-        
-        // Hash all operations
-        let operations_hash = if self.operations.is_empty() {
-            [0; 32]
-        } else {
-            // Convert each operation hash to a byte slice and collect into a vector
-            let mut hash_slices = Vec::with_capacity(self.operations.len());
-            let op_hashes: Vec<[u8; 32]> = self.operations.iter().map(|op| op.calculate_hash()).collect();
-            for hash in &op_hashes {
-                hash_slices.push(&hash[..]);
-            }
-            crypto::secure_hash_multiple("OPERATIONS", &hash_slices)
-        };
-        
-        // Collect savepoint data
         let savepoint_bytes = if self.savepoints.is_empty() {
             Vec::new()
         } else {
@@ -359,32 +345,42 @@ impl TransactionRecord {
             
             savepoint_data
         };
+        let pid_bytes = self.postgres_pid.to_be_bytes();
+        let xid_bytes = self.postgres_xid.to_be_bytes();
+        let client_info_bytes = self.client_info.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
+        let metadata_bytes = self.metadata.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
         
-        let postgres_pid_bytes = self.postgres_pid.to_be_bytes();
-        let postgres_xid_bytes = self.postgres_xid.to_be_bytes();
+        // Calculate hash of concatenated operation hashes
+        let operations_hash = if self.operations.is_empty() {
+            [0; 32]
+        } else {
+            // Convert each operation hash to a byte slice and collect into a vector
+            let mut hash_slices = Vec::with_capacity(self.operations.len());
+            let op_hashes: Vec<[u8; 32]> = self.operations.iter().map(|op| op.calculate_hash()).collect();
+            for hash in &op_hashes {
+                hash_slices.push(&hash[..]);
+            }
+            crypto::secure_hash_multiple("OPERATIONS", &hash_slices)
+        };
         
-        let client_info_bytes = self.client_info.as_deref().unwrap_or("").as_bytes();
-        let metadata_bytes = self.metadata.as_deref().unwrap_or("").as_bytes();
+        // Create a slice of byte slices for hashing
+        let data_slices: Vec<&[u8]> = vec![
+            &id_bytes, 
+            &block_bytes, 
+            &type_byte, 
+            &start_time_bytes, 
+            &end_time_bytes, 
+            &operations_hash, 
+            &self.pre_state_root, 
+            &self.post_state_root, 
+            &savepoint_bytes, 
+            &pid_bytes, 
+            &xid_bytes, 
+            client_info_bytes, 
+            metadata_bytes, 
+        ];
         
-        // Hash with domain separation
-        crypto::secure_hash_multiple(
-            domains::TRANSACTION,
-            &[
-                id_bytes,
-                &block_bytes,
-                &transaction_type_bytes,
-                &start_time_bytes,
-                &end_time_bytes,
-                &operations_hash,
-                &self.pre_state_root,
-                &self.post_state_root,
-                &savepoint_bytes,
-                &postgres_pid_bytes,
-                &postgres_xid_bytes,
-                client_info_bytes,
-                metadata_bytes,
-            ]
-        )
+        crypto::secure_hash_multiple(domains::TRANSACTION, &data_slices)
     }
     
     /// Get an operation by index
@@ -422,8 +418,8 @@ impl TransactionRecord {
     /// Verify the hash of the transaction
     pub fn verify_hash(&self) -> bool {
         match self.hash {
-            Some(hash) => hash == self.calculate_hash(),
-            None => true, // No hash to verify
+            Some(stored_hash) => stored_hash == self.calculate_hash(),
+            None => false, // If no hash is stored, it's invalid
         }
     }
     
@@ -490,7 +486,7 @@ mod tests {
         savepoints.insert("sp1".to_string(), vec![0]);
         
         let tx = TransactionRecord::new(
-            Uuid::new_v4(),
+            1,
             1,
             TransactionType::ReadWrite,
             now,
@@ -560,7 +556,7 @@ mod tests {
         // Create a transaction
         let now = Utc::now();
         let tx = TransactionRecord::new(
-            Uuid::new_v4(),
+            1,
             1,
             TransactionType::ReadWrite,
             now,
@@ -578,4 +574,4 @@ mod tests {
         // Verify the hash
         assert!(tx.verify_hash());
     }
-} 
+}

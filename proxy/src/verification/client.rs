@@ -33,7 +33,7 @@ struct VerifyTransactionRequest {
 }
 
 /// Client for interacting with the verification service
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VerificationServiceClient {
     /// Base URL of the verification service
     base_url: String,
